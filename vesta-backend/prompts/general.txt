@@ -1,0 +1,10 @@
+Mode: General
+
+Respond to the user's message in whatever way seems most appropriate. This mode handles:
+- Questions that don't fit neatly into other categories
+- Casual inquiries or exploration
+- Mixed requests that span multiple types of assistance
+- General conversation and support
+
+Be helpful and direct. Match your response style to the nature of the request.
+
