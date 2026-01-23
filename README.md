@@ -40,16 +40,16 @@ curl -fsSL https://ollama.ai/install.sh | sh
 
 ### 1. Pull the Vesta Model
 
-Ensure the `vesta-general` model is available in Ollama:
+Ensure the `hymetalab/vesta-general` model is available in Ollama:
 
 ```bash
-ollama pull vesta-general
+ollama pull hymetalab/vesta-general
 ```
 
 Verify the model exists:
 
 ```bash
-ollama list | grep vesta-general
+ollama list | grep hymetalab/vesta-general
 ```
 
 ### 2. Backend Setup
@@ -110,7 +110,7 @@ curl http://localhost:8000/health
 curl http://localhost:11434/api/version
 
 # Check model
-ollama list | grep vesta-general
+ollama list | grep hymetalab/vesta-general
 ```
 
 Expected health response:
@@ -139,11 +139,11 @@ curl http://localhost:11434/api/version
 
 ### "Model not found" or similar errors
 
-**Cause:** The `vesta-general` model is not installed
+**Cause:** The `hymetalab/vesta-general` model is not installed
 
 **Fix:**
 ```bash
-ollama pull vesta-general
+ollama pull hymetalab/vesta-general
 ollama list  # Verify it appears in the list
 ```
 
@@ -201,7 +201,7 @@ To stop Ollama:
 
 - **Frontend:** React + TypeScript + Vite (port 5173)
 - **Backend:** FastAPI (port 8000)
-- **Model:** Ollama `vesta-general` (port 11434)
+- **Model:** Ollama `hymetalab/vesta-general` (port 11434)
 - **Storage:** None—fully stateless
 
 ---

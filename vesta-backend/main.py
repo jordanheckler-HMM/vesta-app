@@ -39,9 +39,9 @@ app.add_middleware(
 
 # Model definitions
 MODEL_NAMES = {
-    "general": "vesta-general",
-    "deep": "vesta-deep",
-    "lite": "vesta-lite"
+    "general": "hymetalab/vesta-general",
+    "deep": "hymetalab/vesta-deep",
+    "lite": "hymetalab/vesta-lite"
 }
 
 # Request/Response models
@@ -187,9 +187,9 @@ async def llm_route(
     routing_prompt = f"""Analyze this user query and determine which AI model should handle it.
 
 Available models:
-- vesta-lite: For simple, straightforward questions, quick clarifications, basic information retrieval
-- vesta-general: For standard tasks, moderate complexity, general conversation, typical problem-solving
-- vesta-deep: For complex reasoning, deep analysis, nuanced thinking, difficult problems requiring extensive reasoning
+- hymetalab/vesta-lite: For simple, straightforward questions, quick clarifications, basic information retrieval
+- hymetalab/vesta-general: For standard tasks, moderate complexity, general conversation, typical problem-solving
+- hymetalab/vesta-deep: For complex reasoning, deep analysis, nuanced thinking, difficult problems requiring extensive reasoning
 
 User's selected mode: {mode}
 Message context: {len(history)} previous messages
@@ -215,7 +215,7 @@ Consider all factors and respond with ONLY a JSON object:
         response = await client.post(
             "http://localhost:11434/api/generate",
             json={
-                "model": "vesta-general",
+                "model": "hymetalab/vesta-general",
                 "prompt": routing_prompt,
                 "temperature": 0.3,  # Lower temperature for more consistent routing
                 "stream": False
@@ -362,7 +362,7 @@ async def chat(request: ChatRequest):
             # Manual model selection
             selected_model_key = request.model if request.model != "auto" else "general"
         
-        model_name = MODEL_NAMES.get(selected_model_key, "vesta-general")
+        model_name = MODEL_NAMES.get(selected_model_key, "hymetalab/vesta-general")
         
         # Log routing decision
         if routing_decision:
