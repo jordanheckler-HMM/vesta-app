@@ -2,6 +2,7 @@ import { useState, KeyboardEvent, useRef } from "react";
 import { Send, Paperclip, X, FileText, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { toast } from "@/components/ui/use-toast";
 
 interface ChatInputProps {
   onSend: (message: string, files?: File[]) => void;
@@ -25,7 +26,10 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
     });
     
     if (allowedFiles.length < files.length) {
-      alert('Some files were skipped. Only PDF, DOCX, CSV, TXT, and Excel files are supported.');
+      toast({
+        title: "Some files were skipped",
+        description: "Only PDF, DOCX, CSV, TXT, and Excel files are supported.",
+      });
     }
     
     setAttachedFiles(prev => [...prev, ...allowedFiles]);
@@ -50,6 +54,8 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing) return;
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -76,8 +82,10 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
                   ({(file.size / 1024).toFixed(1)}KB)
                 </span>
                 <button
+                  type="button"
                   onClick={() => removeFile(idx)}
                   className="hover:text-destructive transition-colors"
+                  aria-label={`Remove ${file.name}`}
                   title="Remove file"
                 >
                   <X className="w-3.5 h-3.5" />
@@ -93,6 +101,7 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={handleKeyDown}
+            aria-label="Message input"
             placeholder={attachedFiles.length > 0 
               ? "Add a message about these files (optional)..." 
               : "Paste internal notes, attach files, or describe what you're working through…"}
@@ -103,11 +112,13 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
           <div className="flex flex-col gap-2 self-end">
             {/* File upload button */}
             <Button
+              type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={disabled}
               size="icon"
               variant="outline"
               className="h-10 w-10 shrink-0"
+              aria-label="Attach files"
               title="Attach files (PDF, DOCX, CSV, TXT, Excel)"
             >
               <Paperclip className="w-4 h-4" />
@@ -116,20 +127,24 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
             {/* Send/Stop button - changes based on streaming state */}
             {isStreaming ? (
               <Button
+                type="button"
                 onClick={onCancel}
                 size="icon"
                 variant="outline"
                 className="h-10 w-10 shrink-0 border-muted-foreground/50 hover:bg-muted"
+                aria-label="Stop generating response"
                 title="Stop generating"
               >
                 <Square className="w-4 h-4 fill-current text-muted-foreground" />
               </Button>
             ) : (
               <Button
+                type="button"
                 onClick={handleSend}
                 disabled={(!value.trim() && attachedFiles.length === 0) || disabled}
                 size="icon"
                 className="h-10 w-10 shrink-0"
+                aria-label="Send message"
               >
                 <Send className="w-4 h-4" />
               </Button>

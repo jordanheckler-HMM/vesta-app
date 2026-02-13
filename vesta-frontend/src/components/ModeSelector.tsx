@@ -21,10 +21,17 @@ const ModeSelector = ({ selectedMode, onModeChange }: ModeSelectorProps) => {
         <p className="text-sm font-medium text-foreground mb-3">
           What kind of thinking do you want to do?
         </p>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div
+          className="grid grid-cols-2 md:grid-cols-4 gap-2"
+          role="radiogroup"
+          aria-label="Thinking mode"
+        >
           {modes.map((mode) => (
             <button
               key={mode.id}
+              type="button"
+              role="radio"
+              aria-checked={selectedMode === mode.id}
               onClick={() => onModeChange(mode.id)}
               className={`vesta-mode-card flex items-center gap-2 text-left text-sm ${
                 selectedMode === mode.id ? "selected" : ""

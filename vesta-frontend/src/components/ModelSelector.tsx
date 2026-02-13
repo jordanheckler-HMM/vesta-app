@@ -21,10 +21,17 @@ const ModelSelector = ({ selectedModel, onModelChange }: ModelSelectorProps) => 
         <p className="text-xs font-medium text-muted-foreground mb-2">
           Model Selection
         </p>
-        <div className="grid grid-cols-4 gap-2">
+        <div
+          className="grid grid-cols-2 sm:grid-cols-4 gap-2"
+          role="radiogroup"
+          aria-label="Model selection"
+        >
           {models.map((model) => (
             <button
               key={model.id}
+              type="button"
+              role="radio"
+              aria-checked={selectedModel === model.id}
               onClick={() => onModelChange(model.id)}
               className={`flex flex-col items-center gap-1 px-3 py-2 rounded-md border transition-colors text-xs ${
                 selectedModel === model.id

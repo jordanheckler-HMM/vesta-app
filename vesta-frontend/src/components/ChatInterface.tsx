@@ -104,7 +104,16 @@ const ChatInterface = ({ messages, isLoading, currentModel }: ChatInterfaceProps
   }, []);
 
   return (
-    <div className="flex-1 overflow-y-auto relative" ref={scrollContainerRef} onScroll={handleScroll}>
+    <div
+      className="flex-1 overflow-y-auto relative"
+      ref={scrollContainerRef}
+      onScroll={handleScroll}
+      role="log"
+      aria-live="polite"
+      aria-relevant="additions text"
+      aria-label="Conversation messages"
+      aria-busy={isLoading || undefined}
+    >
       <div className="max-w-4xl mx-auto px-6 py-6 pb-48">
         {messages.length === 0 ? (
           <div className="text-center py-16">
@@ -124,7 +133,11 @@ const ChatInterface = ({ messages, isLoading, currentModel }: ChatInterfaceProps
               />
             ))}
             {isLoading && messages[messages.length - 1]?.role === "user" && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground py-3">
+              <div
+                className="flex items-center gap-2 text-sm text-muted-foreground py-3"
+                role="status"
+                aria-live="polite"
+              >
                 <div className="flex gap-1">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse" style={{ animationDelay: "0ms" }} />
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse" style={{ animationDelay: "150ms" }} />
@@ -141,10 +154,12 @@ const ChatInterface = ({ messages, isLoading, currentModel }: ChatInterfaceProps
       {/* Scroll to bottom button - appears when user scrolls up during streaming */}
       {showScrollButton && (
         <button
+          type="button"
           onClick={scrollToBottom}
           className="fixed bottom-44 right-8 bg-primary text-primary-foreground 
                      rounded-full p-3 shadow-lg hover:shadow-xl transition-all
                      animate-in fade-in slide-in-from-bottom-4 z-20"
+          aria-label="Scroll to latest message"
           title="Scroll to bottom"
         >
           <ArrowDown className="w-5 h-5" />

@@ -1,0 +1,44 @@
+name: CD (Safe Mode)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-release-artifacts:
+    name: Build release artifacts (manual)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: vesta-frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: vesta-frontend
+        run: npm ci
+
+      - name: Build frontend artifacts
+        working-directory: vesta-frontend
+        run: npm run build
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vesta-frontend-dist
+          path: vesta-frontend/dist
+
+  deploy-disabled:
+    name: Deploy (disabled by default)
+    needs: build-release-artifacts
+    runs-on: ubuntu-latest
+    if: ${{ false }}
+    steps:
+      - name: TODO
+        run: |
+          echo "Deployment is intentionally disabled."
+          echo "TODO: add provider-specific deploy steps with protected environment approvals."

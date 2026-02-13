@@ -5,6 +5,17 @@ import ModelSelector, { ModelType } from "@/components/ModelSelector";
 import ChatInterface, { Message } from "@/components/ChatInterface";
 import ChatInput from "@/components/ChatInput";
 import VestaFooter from "@/components/VestaFooter";
+import { toast } from "@/components/ui/use-toast";
+
+interface UploadedFile {
+  filename: string;
+  content?: string;
+  error?: string;
+}
+
+interface UploadResponse {
+  files: UploadedFile[];
+}
 
 const Index = () => {
   const [mode, setMode] = useState<ThinkingMode>("general");
@@ -44,7 +55,7 @@ const Index = () => {
 
   const handleSend = async (content: string, files?: File[]) => {
     let messageContent = content;
-    let fileContents: any[] = [];
+    let fileContents: UploadedFile[] = [];
 
     // Upload files first if any
     if (files && files.length > 0) {
@@ -58,7 +69,7 @@ const Index = () => {
         });
         
         if (uploadResponse.ok) {
-          const uploadData = await uploadResponse.json();
+          const uploadData: UploadResponse = await uploadResponse.json();
           fileContents = uploadData.files;
           
           // Add file context to message
@@ -75,7 +86,11 @@ const Index = () => {
         }
       } catch (error) {
         console.error("File upload error:", error);
-        alert("Failed to upload files. Please try again.");
+        toast({
+          variant: "destructive",
+          title: "File upload failed",
+          description: "Please try again.",
+        });
         return;
       }
     }

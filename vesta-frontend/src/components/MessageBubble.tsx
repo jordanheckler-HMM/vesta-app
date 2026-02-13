@@ -46,10 +46,12 @@ const MessageBubble = ({ role, content, isStreaming, modelUsed }: MessageBubbleP
       >
         {/* Copy button */}
         <button
+          type="button"
           onClick={handleCopy}
           className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 
-                     transition-opacity p-1.5 rounded bg-background/90 
+                     group-focus-within:opacity-100 transition-opacity p-1.5 rounded bg-background/90 
                      hover:bg-background border border-border shadow-sm"
+          aria-label="Copy message"
           title={copied ? "Copied!" : "Copy message"}
           disabled={isStreaming}
         >
