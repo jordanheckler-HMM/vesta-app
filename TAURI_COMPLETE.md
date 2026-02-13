@@ -23,20 +23,20 @@ Successfully transformed the Vesta application into a native macOS desktop app u
 #### ✅ Automatic Backend Management
 - Spawns Python FastAPI backend on app startup
 - Health check with 10-second timeout
-- Monitors `http://localhost:8000/health`
+- Monitors `http://localhost:8090/health`
 - Graceful termination on app close
 - Process state tracking in Rust
 
 #### ✅ Development Mode Support
 - `npm run tauri:dev` launches dev environment
 - Vite hot-reload still works
-- Backend runs from source code
+- Backend runs from source code (for fast iteration)
 - Logs visible in terminal
 
 #### ✅ Production Build
 - `npm run tauri:build` creates native app
 - Frontend bundled as static files
-- Backend runs from source (sidecar bundling ready)
+- Backend runs from bundled sidecar binary
 - Single `.app` file output
 
 ## File Structure
@@ -58,7 +58,8 @@ vesta-frontend/
 └── dist/                        # Vite build output
 
 vesta-backend/
-└── build_sidecar.sh             # PyInstaller bundler script
+├── build_sidecar.sh             # PyInstaller bundler script
+└── sidecar_entry.py             # Sidecar runtime entrypoint
 ```
 
 ## How to Use
@@ -69,7 +70,7 @@ cd vesta-frontend
 npm run tauri:dev
 ```
 - Opens Tauri window with Vite dev server
-- Backend starts automatically on port 8000
+- Backend starts automatically on port 8090
 - Hot reload enabled
 - Requires: Python 3, uvicorn, fastapi, Ollama running
 
@@ -106,9 +107,9 @@ open /Applications/Vesta.app
 ### Configuration Changes
 
 **tauri.conf.json**:
-- Dev URL: `http://localhost:8080`
+- Dev URL: `http://localhost:8081`
 - Build dist: `../dist`
-- CSP: Allows localhost:8000 and localhost:11434
+- CSP: Allows localhost:8090 and localhost:11434
 - Bundle targets: macOS .app
 
 **vite.config.ts**:
@@ -124,15 +125,15 @@ open /Applications/Vesta.app
 ```rust
 Startup:
 1. App launches
-2. Spawn Python process (uvicorn main:app --port 8000)
-3. Poll /health endpoint (max 10s)
-4. Show window when ready
+2. Dev: spawn `python3 -m uvicorn` on port 8090
+3. Prod: spawn bundled `vesta-backend` sidecar on port 8090
+4. Poll /health endpoint (max 10s)
+5. Show window when ready
 
 Shutdown:
 1. User closes window
-2. Kill backend process
-3. Wait for process termination
-4. Exit cleanly
+2. Kill backend process (native child or sidecar child)
+3. Exit cleanly
 ```
 
 ## Current Status
@@ -147,27 +148,18 @@ Shutdown:
 7. Native app works
 
 ### ⚠️ Notes
-1. **Backend runs from source**: Currently spawns `python3 -m uvicorn` instead of bundled binary
-2. **Ollama required**: Must be running separately on port 11434
-3. **Port 8000 hardcoded**: If port in use, app fails to start
-4. **No code signing**: macOS will show "unidentified developer" warning
+1. **Ollama required**: Must be running separately on port 11434
+2. **Port 8090 hardcoded**: If port in use, app fails to start
+3. **No code signing**: macOS will show "unidentified developer" warning
 
 ### 🔄 Optional Future Enhancements
-1. **Bundle Python backend as sidecar**:
-   ```bash
-   cd vesta-backend
-   ./build_sidecar.sh
-   mv dist/vesta-backend ../vesta-frontend/src-tauri/binaries/
-   ```
-   Then update lib.rs to use sidecar binary in production
+1. **Dynamic port allocation**: Auto-find available port if 8090 in use
 
-2. **Dynamic port allocation**: Auto-find available port if 8000 in use
+2. **Ollama detection**: Show helpful error if Ollama not installed
 
-3. **Ollama detection**: Show helpful error if Ollama not installed
+3. **Code signing**: Sign app for distribution (requires Apple Developer account)
 
-4. **Code signing**: Sign app for distribution (requires Apple Developer account)
-
-5. **DMG installer**: Create drag-to-install disk image
+4. **DMG installer**: Create drag-to-install disk image
    ```bash
    npm run tauri:build -- --bundles dmg
    ```
@@ -177,7 +169,7 @@ Shutdown:
 ### ✅ Verified Working
 - [x] Tauri initialization
 - [x] Frontend build (Vite)
-- [x] Backend spawning (Python)
+- [x] Backend spawning (source in dev, sidecar in prod)
 - [x] Health check logic
 - [x] Rust compilation
 - [x] Bundle creation (.app)
@@ -211,7 +203,7 @@ cargo tauri bundle --bundles app # Create .app bundle
 
 # Backend
 cd ../vesta-backend
-python3 -m uvicorn main:app --port 8000  # Manual start
+python3 -m uvicorn main:app --port 8090  # Manual start
 ./build_sidecar.sh              # Create standalone binary
 ```
 
@@ -219,7 +211,7 @@ python3 -m uvicorn main:app --port 8000  # Manual start
 
 ### "Backend failed to start"
 - Check Ollama is running: `curl http://localhost:11434/api/version`
-- Check port 8000 is free: `lsof -i :8000`
+- Check port 8090 is free: `lsof -i :8090`
 - Check Python/uvicorn installed: `python3 -m uvicorn --version`
 
 ### "Operation not permitted" during build

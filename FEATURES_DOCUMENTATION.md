@@ -304,7 +304,7 @@ No additional installation needed - uses existing dependencies.
 
 ### File Upload Not Working
 - **Issue**: Upload button unresponsive
-- **Solution**: Check backend is running on http://localhost:8000
+- **Solution**: Check backend is running on http://localhost:8090
 
 - **Issue**: "Failed to upload files" error
 - **Solution**: Verify backend dependencies installed, check console for detailed errors

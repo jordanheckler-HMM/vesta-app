@@ -31,12 +31,12 @@ Original browser-based setup still works:
 ```bash
 # Terminal 1: Backend
 cd vesta-backend
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8090
 
 # Terminal 2: Frontend
 cd vesta-frontend
 npm run dev
-# Open http://localhost:8080
+# Open http://localhost:8081
 ```
 
 ## 📦 What's New

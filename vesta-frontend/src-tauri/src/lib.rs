@@ -1,10 +1,17 @@
 use std::process::{Child, Command};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::Manager;
+use tauri_plugin_shell::{process::CommandChild as SidecarChild, ShellExt};
 
 // Global state to track the backend process
-struct BackendProcess(Arc<Mutex<Option<Child>>>);
+enum BackendProcessHandle {
+    Native(Child),
+    Sidecar(SidecarChild),
+}
+
+struct BackendProcess(Arc<Mutex<Option<BackendProcessHandle>>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -30,7 +37,7 @@ pub fn run() {
                 start_dev_backend(app, backend_arc.clone())?;
             } else {
                 log::info!("Production mode: Starting bundled backend sidecar...");
-                start_dev_backend(app, backend_arc.clone())?; // For now, use dev mode in prod too
+                start_prod_backend(app, backend_arc.clone())?;
             }
 
             // Wait for backend to be ready
@@ -50,10 +57,17 @@ pub fn run() {
                 // Clean up backend process when app exits
                 if let Some(backend_state) = app_handle.try_state::<BackendProcess>() {
                     if let Ok(mut process_guard) = backend_state.0.lock() {
-                        if let Some(mut process) = process_guard.take() {
+                        if let Some(process) = process_guard.take() {
                             log::info!("Terminating backend process...");
-                            let _ = process.kill();
-                            let _ = process.wait();
+                            match process {
+                                BackendProcessHandle::Native(mut process) => {
+                                    let _ = process.kill();
+                                    let _ = process.wait();
+                                }
+                                BackendProcessHandle::Sidecar(process) => {
+                                    let _ = process.kill();
+                                }
+                            }
                         }
                     }
                 }
@@ -62,19 +76,16 @@ pub fn run() {
 }
 
 fn start_dev_backend(
-    app: &tauri::App,
-    backend_process: Arc<Mutex<Option<Child>>>,
+    _app: &tauri::App,
+    backend_process: Arc<Mutex<Option<BackendProcessHandle>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Get the backend directory path
-    // In development, it's relative to the workspace root
-    let app_dir = app.path().app_config_dir()?;
-    let backend_dir = app_dir
+    // Resolve backend path from the checked-out source tree.
+    // CARGO_MANIFEST_DIR points to vesta-frontend/src-tauri during development.
+    let backend_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
         .map(|p| p.join("vesta-backend"))
-        .ok_or("Failed to resolve backend directory")?;
+        .ok_or("Failed to resolve backend directory from CARGO_MANIFEST_DIR")?;
 
     log::info!("Starting backend from: {:?}", backend_dir);
 
@@ -93,13 +104,29 @@ fn start_dev_backend(
             "--host",
             "127.0.0.1",
             "--port",
-            "8000",
+            "8090",
         ])
         .current_dir(&backend_dir)
         .spawn()?;
 
     let mut process_guard = backend_process.lock().unwrap();
-    *process_guard = Some(child);
+    *process_guard = Some(BackendProcessHandle::Native(child));
+
+    Ok(())
+}
+
+fn start_prod_backend(
+    app: &tauri::App,
+    backend_process: Arc<Mutex<Option<BackendProcessHandle>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_rx, child) = app
+        .shell()
+        .sidecar("vesta-backend")?
+        .env("VESTA_BACKEND_PORT", "8090")
+        .spawn()?;
+
+    let mut process_guard = backend_process.lock().unwrap();
+    *process_guard = Some(BackendProcessHandle::Sidecar(child));
 
     Ok(())
 }
@@ -123,7 +150,7 @@ fn check_backend_health() -> bool {
         .timeout(Duration::from_secs(2))
         .build()
     {
-        Ok(client) => match client.get("http://localhost:8000/health").send() {
+        Ok(client) => match client.get("http://localhost:8090/health").send() {
             Ok(response) => {
                 if response.status().is_success() {
                     log::info!("Backend health check passed");

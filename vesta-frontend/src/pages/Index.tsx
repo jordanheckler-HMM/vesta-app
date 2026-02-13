@@ -52,7 +52,7 @@ const Index = () => {
         const formData = new FormData();
         files.forEach(file => formData.append('files', file));
         
-        const uploadResponse = await fetch("http://localhost:8000/upload", {
+        const uploadResponse = await fetch("http://localhost:8090/upload", {
           method: "POST",
           body: formData,
         });
@@ -104,7 +104,7 @@ const Index = () => {
     setMessages((prev) => [...prev, assistantMessage]);
 
     try {
-      const response = await fetch("http://localhost:8000/chat", {
+      const response = await fetch("http://localhost:8090/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

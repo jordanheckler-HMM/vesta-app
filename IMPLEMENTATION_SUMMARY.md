@@ -95,7 +95,7 @@ This installs:
 
 ```bash
 # Make sure you're in vesta-backend directory
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8090
 ```
 
 ### 3. Restart Frontend (if running)
@@ -329,7 +329,7 @@ python3 main.py
 - Try different browser
 
 ### File upload fails
-- Check backend is running: `curl http://localhost:8000/health`
+- Check backend is running: `curl http://localhost:8090/health`
 - Verify file size < 10MB
 - Check file type is supported
 - Look at backend logs for detailed errors

@@ -8,9 +8,9 @@
 - Configured `tauri.conf.json` with:
   - App name: "Vesta"
   - Window: 1200x800px, centered
-  - Dev server: http://localhost:8080
+  - Dev server: http://localhost:8081
   - Build output: ../dist
-  - CSP policy for localhost:8000 and localhost:11434
+  - CSP policy for localhost:8090 and localhost:11434
 
 ### 2. ✅ Add tauri:dev and tauri:build scripts
 - Updated `vesta-frontend/package.json` with:
@@ -37,7 +37,7 @@
 
 ### 6. ✅ Implement startup health check and error handling
 - Health check polling (10 second timeout)
-- HTTP check to `http://localhost:8000/health`
+- HTTP check to `http://localhost:8090/health`
 - Graceful error handling if backend fails to start
 - Logging for all lifecycle events
 
@@ -50,8 +50,8 @@ npm run tauri:dev
 ```
 
 This will:
-1. Start Vite dev server on port 8080
-2. Spawn Python backend on port 8000
+1. Start Vite dev server on port 8081
+2. Spawn Python backend on port 8090
 3. Open Tauri window
 4. Enable hot reload for frontend
 
@@ -71,44 +71,35 @@ This will:
 2. Compile Rust code
 3. Create native app bundle at `src-tauri/target/release/bundle/macos/Vesta.app`
 
-**Note:** For production, you need to:
-1. Build the Python backend sidecar: `cd ../vesta-backend && ./build_sidecar.sh`
-2. Copy the binary to `vesta-frontend/src-tauri/binaries/`
-3. Update `tauri.conf.json` externalBin to include the sidecar
+`npm run tauri:build` now auto-builds the backend sidecar and places it in `vesta-frontend/src-tauri/binaries/` before running the Tauri build.
 
 ## Known Limitations
 
-1. **Backend sidecar bundling:** Currently the app runs the backend from source in both dev and prod modes. To fully bundle the backend:
-   - Build with PyInstaller: `cd vesta-backend && ./build_sidecar.sh`
-   - Move binary to `vesta-frontend/src-tauri/binaries/vesta-backend`
-   - Update `tauri.conf.json` externalBin array
-   - Update lib.rs to use sidecar in production mode
+1. **Ollama dependency:** Ollama must be running separately. The app checks for it via the backend health endpoint.
 
-2. **Ollama dependency:** Ollama must be running separately. The app checks for it via the backend health endpoint.
-
-3. **Port conflicts:** Hardcoded to port 8000. If in use, the app will fail to start.
+2. **Port conflicts:** Hardcoded to port 8090. If in use, the app will fail to start.
 
 ## Next Steps for Full Production
 
 To complete the production-ready build:
 
-1. Build Python sidecar binary
-2. Configure Tauri to use the sidecar binary in production
-3. Test production build end-to-end
-4. Verify app works without Python/Node.js installed
-5. Add app icon (optional)
-6. Code signing for macOS (optional)
+1. Test production build end-to-end
+2. Verify app works without Python/Node.js installed
+3. Add app icon (optional)
+4. Code signing for macOS (optional)
 
 ## File Changes Made
 
 **New files:**
 - `vesta-frontend/src-tauri/*` (entire Tauri project)
 - `vesta-backend/build_sidecar.sh` (backend bundler)
+- `vesta-backend/sidecar_entry.py` (backend sidecar entrypoint)
 
 **Modified files:**
 - `vesta-frontend/package.json` (added tauri scripts)
 - `vesta-frontend/vite.config.ts` (Tauri production support)
 - `vesta-frontend/src-tauri/tauri.conf.json` (app configuration)
+- `vesta-frontend/src-tauri/.gitignore` (ignore generated sidecar binaries)
 - `vesta-frontend/src-tauri/Cargo.toml` (Rust dependencies)
 - `vesta-frontend/src-tauri/src/lib.rs` (sidecar management)
 

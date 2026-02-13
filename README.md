@@ -80,10 +80,10 @@ ollama serve
 
 ```bash
 cd vesta-backend
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8090
 ```
 
-Expected output: `Uvicorn running on http://127.0.0.1:8000`
+Expected output: `Uvicorn running on http://127.0.0.1:8090`
 
 ### Start Frontend
 
@@ -92,11 +92,11 @@ cd vesta-frontend
 npm run dev
 ```
 
-Expected output: `Local: http://localhost:5173/`
+Expected output: `Local: http://localhost:8081/`
 
 ### Access Vesta
 
-Open your browser to: **http://localhost:5173**
+Open your browser to: **http://localhost:8081**
 
 ## Verify System Health
 
@@ -104,7 +104,7 @@ Check that all components are running:
 
 ```bash
 # Check backend
-curl http://localhost:8000/health
+curl http://localhost:8090/health
 
 # Check Ollama
 curl http://localhost:11434/api/version
@@ -160,15 +160,15 @@ ollama list  # Verify it appears in the list
 
 ### Port conflicts (Address already in use)
 
-**Cause:** Another process is using port 8000 or 5173
+**Cause:** Another process is using port 8090 or 8081
 
 **Fix:**
 ```bash
-# Find and kill process on port 8000 (backend)
-lsof -ti:8000 | xargs kill -9
+# Find and kill process on port 8090 (backend)
+lsof -ti:8090 | xargs kill -9
 
-# Find and kill process on port 5173 (frontend)
-lsof -ti:5173 | xargs kill -9
+# Find and kill process on port 8081 (frontend)
+lsof -ti:8081 | xargs kill -9
 ```
 
 ### Frontend shows blank page or errors
@@ -176,8 +176,8 @@ lsof -ti:5173 | xargs kill -9
 **Cause:** Backend is not running or on wrong port
 
 **Fix:**
-1. Verify backend is running: `curl http://localhost:8000/health`
-2. Check frontend expects `http://localhost:8000` (default)
+1. Verify backend is running: `curl http://localhost:8090/health`
+2. Check frontend expects `http://localhost:8090` (default)
 3. Check browser console for errors
 
 ## Stopping Vesta
@@ -199,8 +199,8 @@ To stop Ollama:
 
 ## Architecture
 
-- **Frontend:** React + TypeScript + Vite (port 5173)
-- **Backend:** FastAPI (port 8000)
+- **Frontend:** React + TypeScript + Vite (port 8081)
+- **Backend:** FastAPI (port 8090)
 - **Model:** Ollama `hymetalab/vesta-general` (port 11434)
 - **Storage:** None—fully stateless
 

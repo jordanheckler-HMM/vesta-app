@@ -9,8 +9,10 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "tauri:dev": "cargo tauri dev",
-    "tauri:build": "cargo tauri build"
+    "build:sidecar": "cd ../vesta-backend && ./build_sidecar.sh",
+    "build:sidecar:force": "cd ../vesta-backend && FORCE_REBUILD=1 ./build_sidecar.sh",
+    "tauri:dev": "npm run build:sidecar && cargo tauri dev",
+    "tauri:build": "npm run build:sidecar:force && cargo tauri build"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

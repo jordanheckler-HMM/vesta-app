@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => ({
   base: mode === "production" ? "./" : "/",
   server: {
     host: "::",
-    port: 8080,
+    port: 8081,
   },
   // Prevent Vite from clearing the console when running in Tauri dev mode
   clearScreen: false,
