@@ -8,15 +8,24 @@ export interface Message {
   content: string;
   isStreaming?: boolean;
   modelUsed?: string;
+  sources?: RetrievedSource[];
+}
+
+export interface RetrievedSource {
+  document_id: string;
+  filename: string;
+  chunk_index: number;
+  score: number;
 }
 
 interface ChatInterfaceProps {
   messages: Message[];
   isLoading?: boolean;
   currentModel?: string | null;
+  compact?: boolean;
 }
 
-const ChatInterface = ({ messages, isLoading, currentModel }: ChatInterfaceProps) => {
+const ChatInterface = ({ messages, isLoading, currentModel, compact = false }: ChatInterfaceProps) => {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
@@ -114,10 +123,10 @@ const ChatInterface = ({ messages, isLoading, currentModel }: ChatInterfaceProps
       aria-label="Conversation messages"
       aria-busy={isLoading || undefined}
     >
-      <div className="max-w-4xl mx-auto px-6 py-6 pb-48">
+      <div className={`max-w-4xl mx-auto ${compact ? "px-3 py-3 pb-36" : "px-6 py-6 pb-48"}`}>
         {messages.length === 0 ? (
-          <div className="text-center py-16">
-            <p className="text-muted-foreground text-sm">
+          <div className={`text-center ${compact ? "py-10" : "py-16"}`}>
+            <p className={`text-muted-foreground ${compact ? "text-xs" : "text-sm"}`}>
               Start a conversation by typing below.
             </p>
           </div>
@@ -130,6 +139,7 @@ const ChatInterface = ({ messages, isLoading, currentModel }: ChatInterfaceProps
                 content={msg.content}
                 isStreaming={msg.role === "assistant" && msg.content === "" && isLoading}
                 modelUsed={msg.role === "assistant" ? (msg.modelUsed || (index === messages.length - 1 ? currentModel : null)) : undefined}
+                sources={msg.role === "assistant" ? msg.sources : undefined}
               />
             ))}
             {isLoading && messages[messages.length - 1]?.role === "user" && (
@@ -156,9 +166,10 @@ const ChatInterface = ({ messages, isLoading, currentModel }: ChatInterfaceProps
         <button
           type="button"
           onClick={scrollToBottom}
-          className="fixed bottom-44 right-8 bg-primary text-primary-foreground 
-                     rounded-full p-3 shadow-lg hover:shadow-xl transition-all
-                     animate-in fade-in slide-in-from-bottom-4 z-20"
+          className={`fixed bg-primary text-primary-foreground 
+                     rounded-full shadow-lg hover:shadow-xl transition-all
+                     ${compact ? "bottom-32 right-4 p-2.5" : "bottom-44 right-8 p-3"}
+                     animate-in fade-in slide-in-from-bottom-4 z-20`}
           aria-label="Scroll to latest message"
           title="Scroll to bottom"
         >

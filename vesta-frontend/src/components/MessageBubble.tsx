@@ -7,9 +7,15 @@ interface MessageBubbleProps {
   content: string;
   isStreaming?: boolean;
   modelUsed?: string | null;
+  sources?: {
+    document_id: string;
+    filename: string;
+    chunk_index: number;
+    score: number;
+  }[];
 }
 
-const MessageBubble = ({ role, content, isStreaming, modelUsed }: MessageBubbleProps) => {
+const MessageBubble = ({ role, content, isStreaming, modelUsed, sources }: MessageBubbleProps) => {
   const isUser = role === "user";
   const [copied, setCopied] = useState(false);
   
@@ -96,6 +102,24 @@ const MessageBubble = ({ role, content, isStreaming, modelUsed }: MessageBubbleP
             </ReactMarkdown>
             {isStreaming && (
               <span className="inline-block w-2 h-4 bg-foreground/70 animate-pulse ml-0.5" />
+            )}
+            {sources && sources.length > 0 && (
+              <div className="mt-3 pt-2 border-t border-border/60">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+                  Sources
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {sources.map((source, index) => (
+                    <span
+                      key={`${source.document_id}-${source.chunk_index}-${index}`}
+                      className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground"
+                      title={`${source.filename} | chunk ${source.chunk_index} | score ${source.score}`}
+                    >
+                      {source.filename}#{source.chunk_index}
+                    </span>
+                  ))}
+                </div>
+              </div>
             )}
             {modelDisplay && !isStreaming && (
               <div className="flex justify-end mt-2">

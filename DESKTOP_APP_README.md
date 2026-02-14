@@ -1,59 +1,47 @@
-# Vesta - Desktop App Quick Start
+# Vesta Desktop Quick Start
 
-## 🚀 Launch Options
+## Run in development
 
-### Option 1: Desktop App (Recommended)
-Double-click the app icon:
-```bash
-open /Applications/Vesta.app
-```
-
-Or build it yourself:
-```bash
-cd vesta-frontend
-npm run tauri:build
-# App created at: src-tauri/target/release/bundle/macos/Vesta.app
-```
-
-**Requirements:**
-- Ollama installed and running
-- That's it! (No Python, Node.js, or terminal needed)
-
-### Option 2: Development Mode
-For developers working on the code:
 ```bash
 cd vesta-frontend
 npm run tauri:dev
 ```
 
-### Option 3: Browser Mode (Legacy)
-Original browser-based setup still works:
-```bash
-# Terminal 1: Backend
-cd vesta-backend
-uvicorn main:app --reload --port 8090
+What starts:
+- Vite frontend on `http://localhost:8081`
+- FastAPI backend on `http://localhost:8090`
+- Tauri desktop app shell
 
-# Terminal 2: Frontend
+## Build release app
+
+```bash
 cd vesta-frontend
-npm run dev
-# Open http://localhost:8081
+npm run tauri:build
 ```
 
-## 📦 What's New
+Output app:
+- `vesta-frontend/src-tauri/target/release/bundle/macos/Vesta.app`
 
-Vesta is now a native macOS desktop application! The app:
-- ✅ Launches with a double-click
-- ✅ Starts the backend automatically
-- ✅ No terminal required
-- ✅ Closes cleanly
-- ✅ Looks like a real app
+## Menu bar and close behavior
 
-## 📖 Full Documentation
+- Closing the main window hides it instead of quitting.
+- Vesta stays active in the menu bar.
+- Clicking the menu bar icon opens a mini chat window.
+- Mini chat auto-hides when it loses focus.
+- Full quit only happens with tray menu `Quit Vesta` or `Cmd+Q`.
 
-- **Quick Start**: This file
-- **Setup Guide**: See main README.md below
-- **Tauri Details**: See TAURI_COMPLETE.md
-- **Implementation**: See TAURI_IMPLEMENTATION.md
+## Files tab (persistent local knowledge)
 
----
+- Main window includes a `Files` tab.
+- Uploaded docs are embedded with Ollama `qwen3-embedding:0.6b`.
+- Retrieved snippets are automatically injected into `/chat` requests.
+- Assistant messages show source labels for retrieved chunks.
 
+## Required Ollama models
+
+```bash
+ollama pull hymetalab/vesta-general
+ollama pull hymetalab/vesta-lite
+ollama pull hymetalab/vesta-deep
+ollama pull qwen3-embedding:0.6b
+```

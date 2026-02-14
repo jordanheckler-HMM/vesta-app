@@ -9,9 +9,10 @@ interface ChatInputProps {
   onCancel?: () => void;
   disabled?: boolean;
   isStreaming?: boolean;
+  compact?: boolean;
 }
 
-const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) => {
+const ChatInput = ({ onSend, onCancel, disabled, isStreaming, compact = false }: ChatInputProps) => {
   const [value, setValue] = useState("");
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -63,7 +64,7 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
   };
 
   return (
-    <div className="border-t border-vesta-header-border bg-card p-4">
+    <div className={`border-t border-vesta-header-border bg-card ${compact ? "p-2.5" : "p-4"}`}>
       <div className="max-w-4xl mx-auto">
         {/* File attachments preview */}
         {attachedFiles.length > 0 && (
@@ -105,7 +106,7 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
             placeholder={attachedFiles.length > 0 
               ? "Add a message about these files (optional)..." 
               : "Paste internal notes, attach files, or describe what you're working through…"}
-            className="min-h-[80px] resize-none bg-background border-input text-sm"
+            className={`${compact ? "min-h-[96px] text-[13px]" : "min-h-[80px] text-sm"} resize-none bg-background border-input`}
             disabled={disabled}
           />
           
@@ -115,9 +116,9 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={disabled}
-              size="icon"
+              size={compact ? "sm" : "icon"}
               variant="outline"
-              className="h-10 w-10 shrink-0"
+              className={`${compact ? "h-8 w-8" : "h-10 w-10"} shrink-0`}
               aria-label="Attach files"
               title="Attach files (PDF, DOCX, CSV, TXT, Excel)"
             >
@@ -129,9 +130,9 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
               <Button
                 type="button"
                 onClick={onCancel}
-                size="icon"
+                size={compact ? "sm" : "icon"}
                 variant="outline"
-                className="h-10 w-10 shrink-0 border-muted-foreground/50 hover:bg-muted"
+                className={`${compact ? "h-8 w-8" : "h-10 w-10"} shrink-0 border-muted-foreground/50 hover:bg-muted`}
                 aria-label="Stop generating response"
                 title="Stop generating"
               >
@@ -142,8 +143,8 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming }: ChatInputProps) 
                 type="button"
                 onClick={handleSend}
                 disabled={(!value.trim() && attachedFiles.length === 0) || disabled}
-                size="icon"
-                className="h-10 w-10 shrink-0"
+                size={compact ? "sm" : "icon"}
+                className={`${compact ? "h-8 w-8" : "h-10 w-10"} shrink-0`}
                 aria-label="Send message"
               >
                 <Send className="w-4 h-4" />

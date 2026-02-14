@@ -1,11 +1,22 @@
 # Testing Guide
 
-This repository currently has two active runtime components:
+## Automated checks
 
-- `vesta-frontend` (React + TypeScript + Vite)
-- `vesta-backend` (FastAPI + Python)
+### Backend
 
-## Local commands
+```bash
+cd vesta-backend
+python -m pip install -r requirements-dev.txt
+pytest -q
+```
+
+Coverage includes:
+- `/health` endpoint behavior
+- `/upload` text extraction
+- `/knowledge/files` ingest/list/delete flows
+- duplicate and unsupported file handling
+- `/chat` metadata stream with retrieval sources
+- `/chat` fallback behavior when retrieval fails
 
 ### Frontend
 
@@ -16,51 +27,45 @@ npm run lint
 npm test
 ```
 
-### Backend
+Coverage includes:
+- Model selector interaction
+- Files tab upload and delete behavior
+- Message source labels rendering
+- Mini view hiding the Files tab
+
+### Tauri Rust shell
 
 ```bash
-cd vesta-backend
-python -m pip install -r requirements-dev.txt
-pytest -q
+cd vesta-frontend/src-tauri
+cargo check
 ```
 
-## Test layout
+## Manual validation (macOS)
 
-### Backend (`vesta-backend/tests`)
+1. Start desktop dev:
+   ```bash
+   cd vesta-frontend
+   npm run tauri:dev
+   ```
+2. Close main window and verify app remains running in menu bar.
+3. Click tray icon and verify mini chat opens.
+4. Click outside mini chat and verify it auto-hides.
+5. From tray menu choose `Open Main Window` and verify main window restores.
+6. From tray menu choose `Quit Vesta` and verify app plus backend process exit.
 
-- `test_routing_utils.py`: unit tests for pure routing logic
-- `test_api_integration.py`: integration tests for FastAPI endpoints (`/health`, `/upload`) with external Ollama calls mocked
+## Manual Files RAG validation
 
-### Frontend (`vesta-frontend/src`)
+1. Open main app `Files` tab.
+2. Upload one `.txt` SOP file and confirm status `indexed`.
+3. Upload the same file again and confirm status `duplicate`.
+4. Send a chat query related to the SOP and confirm source tags appear in the assistant message.
+5. Delete the file in `Files` tab and confirm it no longer appears in list.
 
-- `lib/utils.test.ts`: unit test for `cn` utility behavior
-- `components/ModelSelector.test.tsx`: component interaction test for model selection behavior
+## Required local runtime
 
-## CI behavior
-
-GitHub Actions workflow: `.github/workflows/ci.yml`
-
-- Triggered on:
-  - Pull requests
-  - Pushes to `main`
-- Frontend job:
-  - `npm ci`
-  - `npm run lint`
-  - `npm test`
-- Backend job:
-  - Install from `requirements-dev.txt`
-  - `pytest -q`
-
-## Safe-mode CD
-
-Manual-only workflow: `.github/workflows/cd-safe.yml`
-
-- Triggered only via `workflow_dispatch`
-- Builds frontend artifact and uploads it
-- Deploy job is intentionally disabled (`if: false`) until an explicit deployment target and approval model are defined
-
-## Extending tests
-
-- Add backend unit tests for new pure functions in `vesta-backend/tests`.
-- Add backend integration tests for new endpoints; mock external services to keep tests deterministic.
-- Add frontend tests near the feature module (`src/...`) and keep UI tests focused on behavior, not styling details.
+- Ollama server running on `http://localhost:11434`
+- Models installed:
+  - `hymetalab/vesta-general`
+  - `hymetalab/vesta-lite`
+  - `hymetalab/vesta-deep`
+  - `qwen3-embedding:0.6b`

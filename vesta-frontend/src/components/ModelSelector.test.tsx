@@ -9,7 +9,7 @@ describe("ModelSelector", () => {
 
     render(<ModelSelector selectedModel="auto" onModelChange={onModelChange} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /general/i }));
+    fireEvent.click(screen.getByRole("radio", { name: /general/i }));
 
     expect(onModelChange).toHaveBeenCalledWith("general");
   });

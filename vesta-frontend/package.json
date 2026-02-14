@@ -11,9 +11,10 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "cleanup:backend": "pkill -f 'vesta-backend' >/dev/null 2>&1 || true; pkill -f 'vesta-bac' >/dev/null 2>&1 || true; pkill -f 'uvicorn main:app --host 127.0.0.1 --port 8090' >/dev/null 2>&1 || true; pids=$(lsof -ti:8090 -sTCP:LISTEN 2>/dev/null || true); if [ -n \"$pids\" ]; then kill -9 $pids; fi",
     "build:sidecar": "cd ../vesta-backend && ./build_sidecar.sh",
     "build:sidecar:force": "cd ../vesta-backend && FORCE_REBUILD=1 ./build_sidecar.sh",
-    "tauri:dev": "npm run build:sidecar && cargo tauri dev",
+    "tauri:dev": "npm run cleanup:backend && npm run build:sidecar && cargo tauri dev",
     "tauri:build": "npm run build:sidecar:force && cargo tauri build"
   },
   "dependencies": {
