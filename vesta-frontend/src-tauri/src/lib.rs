@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -13,6 +13,8 @@ use tauri_plugin_shell::{process::CommandChild as SidecarChild, ShellExt};
 const TRAY_OPEN_MINI_ID: &str = "tray_open_mini";
 const TRAY_OPEN_MAIN_ID: &str = "tray_open_main";
 const TRAY_QUIT_ID: &str = "tray_quit";
+const BACKEND_PORT: u16 = 8090;
+const BACKEND_HOST: &str = "127.0.0.1";
 
 // Global state to track the backend process.
 enum BackendProcessHandle {
@@ -38,6 +40,8 @@ pub fn run() {
             let backend_process = BackendProcess(Arc::new(Mutex::new(None)));
             let backend_arc = backend_process.0.clone();
             app.manage(backend_process);
+
+            cleanup_stale_backend_processes();
 
             if cfg!(debug_assertions) {
                 log::info!("Development mode: Starting Python backend from source...");
@@ -87,6 +91,7 @@ pub fn run() {
                 } else if event_id == TRAY_OPEN_MAIN_ID {
                     show_main_window(app_handle);
                 } else if event_id == TRAY_QUIT_ID {
+                    cleanup_backend_process(app_handle);
                     app_handle.exit(0);
                 }
             }
@@ -195,19 +200,157 @@ fn cleanup_backend_process<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) 
     if let Some(backend_state) = app_handle.try_state::<BackendProcess>() {
         if let Ok(mut process_guard) = backend_state.0.lock() {
             if let Some(process) = process_guard.take() {
-                log::info!("Terminating backend process...");
-                match process {
-                    BackendProcessHandle::Native(mut process) => {
-                        let _ = process.kill();
-                        let _ = process.wait();
-                    }
-                    BackendProcessHandle::Sidecar(process) => {
-                        let _ = process.kill();
-                    }
-                }
+                terminate_backend_process(process);
             }
         }
     }
+}
+
+fn terminate_backend_process(process: BackendProcessHandle) {
+    match process {
+        BackendProcessHandle::Native(mut process) => {
+            let pid = process.id();
+            match process.try_wait() {
+                Ok(Some(status)) => {
+                    log::info!("Backend process {pid} already exited with status: {status}");
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    log::warn!("Could not read backend process status for {pid}: {error}");
+                }
+            }
+
+            log::info!("Terminating backend process {pid}...");
+            if let Err(error) = process.kill() {
+                log::warn!("Failed to kill backend process {pid} via Child handle: {error}");
+            }
+            if let Err(error) = process.wait() {
+                log::warn!("Failed waiting for backend process {pid} to exit: {error}");
+            }
+            ensure_pid_terminated(pid);
+        }
+        BackendProcessHandle::Sidecar(process) => {
+            let pid = process.pid();
+            log::info!("Terminating backend sidecar process {pid}...");
+            if let Err(error) = process.kill() {
+                log::warn!("Failed to kill sidecar process {pid} via shell handle: {error}");
+            }
+            ensure_pid_terminated(pid);
+        }
+    }
+}
+
+fn cleanup_stale_backend_processes() {
+    let stale_pids = find_backend_listener_pids(BACKEND_PORT);
+    if stale_pids.is_empty() {
+        return;
+    }
+
+    for pid in stale_pids {
+        log::warn!(
+            "Detected stale backend process {pid} still listening on port {BACKEND_PORT}; terminating before startup."
+        );
+        terminate_pid(pid);
+    }
+}
+
+fn find_backend_listener_pids(port: u16) -> Vec<u32> {
+    let output = match Command::new("lsof")
+        .arg(format!("-ti:{port}"))
+        .arg("-sTCP:LISTEN")
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            log::debug!("Unable to check listeners on port {port}: {error}");
+            return Vec::new();
+        }
+    };
+
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .filter(|pid| *pid != std::process::id())
+        .filter(|pid| is_vesta_backend_pid(*pid))
+        .collect()
+}
+
+fn is_vesta_backend_pid(pid: u32) -> bool {
+    let output = match Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("command=")
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            log::debug!("Unable to inspect process {pid}: {error}");
+            return false;
+        }
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+
+    let command = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    command.contains("/vesta-backend")
+        && (command.contains("vesta-backend")
+            || command.contains("uvicorn")
+            || command.contains("sidecar_entry.py"))
+}
+
+fn terminate_pid(pid: u32) {
+    if !send_signal(pid, "-TERM") {
+        return;
+    }
+
+    if !wait_for_pid_exit(pid, Duration::from_secs(2)) {
+        let _ = send_signal(pid, "-KILL");
+        let _ = wait_for_pid_exit(pid, Duration::from_secs(1));
+    }
+}
+
+fn ensure_pid_terminated(pid: u32) {
+    if is_pid_running(pid) {
+        log::warn!("Backend process {pid} still running after graceful shutdown; forcing termination.");
+        terminate_pid(pid);
+    }
+}
+
+fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if !is_pid_running(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    !is_pid_running(pid)
+}
+
+fn is_pid_running(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn send_signal(pid: u32, signal: &str) -> bool {
+    Command::new("kill")
+        .arg(signal)
+        .arg(pid.to_string())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn start_dev_backend(
@@ -228,15 +371,8 @@ fn start_dev_backend(
     }
 
     let child = Command::new("python3")
-        .args([
-            "-m",
-            "uvicorn",
-            "main:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8090",
-        ])
+        .args(["-m", "uvicorn", "main:app", "--host", BACKEND_HOST, "--port"])
+        .arg(BACKEND_PORT.to_string())
         .current_dir(&backend_dir)
         .spawn()?;
 
@@ -253,7 +389,7 @@ fn start_prod_backend(
     let (_rx, child) = app
         .shell()
         .sidecar("vesta-backend")?
-        .env("VESTA_BACKEND_PORT", "8090")
+        .env("VESTA_BACKEND_PORT", BACKEND_PORT.to_string())
         .spawn()?;
 
     let mut process_guard = backend_process.lock().unwrap();
@@ -281,14 +417,22 @@ fn check_backend_health() -> bool {
         .timeout(Duration::from_secs(2))
         .build()
     {
-        Ok(client) => match client.get("http://localhost:8090/health").send() {
+        Ok(client) => match client
+            .get(format!("http://{BACKEND_HOST}:{BACKEND_PORT}/health"))
+            .send()
+        {
             Ok(response) => {
                 if !response.status().is_success() {
                     log::warn!("Backend health check failed with status: {}", response.status());
                     return false;
                 }
 
-                match client.get("http://localhost:8090/knowledge/files").send() {
+                match client
+                    .get(format!(
+                        "http://{BACKEND_HOST}:{BACKEND_PORT}/knowledge/files"
+                    ))
+                    .send()
+                {
                     Ok(knowledge_response) => {
                         if knowledge_response.status().is_success() {
                             log::info!("Backend readiness check passed");
