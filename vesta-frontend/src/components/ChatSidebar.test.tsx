@@ -98,7 +98,7 @@ describe("ChatSidebar", () => {
     expect(onNewChat).toHaveBeenCalledWith("folder-1");
   });
 
-  it("creates a project with selected color from add project dialog", async () => {
+  it("creates a folder with selected color from add folder dialog", async () => {
     const onCreateFolder = vi.fn().mockResolvedValue(undefined);
 
     render(
@@ -117,12 +117,12 @@ describe("ChatSidebar", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /add project/i }));
-    fireEvent.change(screen.getByLabelText(/project name/i), {
+    fireEvent.click(screen.getByRole("button", { name: /add folder/i }));
+    fireEvent.change(screen.getByLabelText(/folder name/i), {
       target: { value: "Finance" },
     });
     fireEvent.click(screen.getByRole("button", { name: /choose slate folder color/i }));
-    fireEvent.click(screen.getByRole("button", { name: /create project/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create folder/i }));
 
     expect(onCreateFolder).toHaveBeenCalledWith("Finance", "slate");
   });

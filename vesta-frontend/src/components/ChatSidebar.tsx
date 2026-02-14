@@ -167,7 +167,7 @@ const ChatSidebar = ({
   const handleSaveFolder = async () => {
     const normalized = folderNameInput.trim();
     if (!normalized) {
-      setFolderNameError("Project name is required.");
+      setFolderNameError("Folder name is required.");
       return;
     }
 
@@ -323,11 +323,11 @@ const ChatSidebar = ({
               variant="outline"
               size="sm"
               onClick={openCreateFolderDialog}
-              aria-label="Add project"
-              title="Add project"
+              aria-label="Add folder"
+              title="Add folder"
             >
               <FolderPlus className="w-4 h-4 mr-1.5" />
-              Add project
+              Add folder
             </Button>
           </div>
         </div>
@@ -400,7 +400,7 @@ const ChatSidebar = ({
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => openEditFolderDialog(folder)}>
                         <Pencil className="w-3.5 h-3.5 mr-2" />
-                        Edit project
+                        Edit folder
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
@@ -432,16 +432,16 @@ const ChatSidebar = ({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {folderDialogMode === "create" ? "Add project" : "Edit project"}
+              {folderDialogMode === "create" ? "Add folder" : "Edit folder"}
             </DialogTitle>
             <DialogDescription>
-              Choose a project name and label color.
+              Choose a folder name and label color.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="folder-name-input">Project name</Label>
+              <Label htmlFor="folder-name-input">Folder name</Label>
               <Input
                 id="folder-name-input"
                 value={folderNameInput}
@@ -518,8 +518,8 @@ const ChatSidebar = ({
               {isSavingFolder
                 ? "Saving..."
                 : folderDialogMode === "create"
-                  ? "Create project"
-                  : "Save project"}
+                  ? "Create folder"
+                  : "Save folder"}
             </Button>
           </DialogFooter>
         </DialogContent>
