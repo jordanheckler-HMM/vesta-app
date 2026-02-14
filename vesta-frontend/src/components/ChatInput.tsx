@@ -1,4 +1,4 @@
-import { useState, KeyboardEvent, useRef } from "react";
+import { useState, KeyboardEvent, useRef, ReactNode } from "react";
 import { Send, Paperclip, X, FileText, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -10,9 +10,17 @@ interface ChatInputProps {
   disabled?: boolean;
   isStreaming?: boolean;
   compact?: boolean;
+  topContent?: ReactNode;
 }
 
-const ChatInput = ({ onSend, onCancel, disabled, isStreaming, compact = false }: ChatInputProps) => {
+const ChatInput = ({
+  onSend,
+  onCancel,
+  disabled,
+  isStreaming,
+  compact = false,
+  topContent,
+}: ChatInputProps) => {
   const [value, setValue] = useState("");
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -66,6 +74,8 @@ const ChatInput = ({ onSend, onCancel, disabled, isStreaming, compact = false }:
   return (
     <div className={`border-t border-vesta-header-border bg-card ${compact ? "p-2.5" : "p-4"}`}>
       <div className="max-w-4xl mx-auto">
+        {topContent && <div className={compact ? "mb-2" : "mb-3"}>{topContent}</div>}
+
         {/* File attachments preview */}
         {attachedFiles.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-2">

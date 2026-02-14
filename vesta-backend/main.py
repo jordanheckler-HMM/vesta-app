@@ -59,6 +59,8 @@ CHUNK_SIZE = 1_200
 CHUNK_OVERLAP = 200
 RETRIEVAL_TOP_K = 5
 RETRIEVAL_MIN_SCORE = 0.2
+FOLDER_COLOR_OPTIONS = {"sand", "stone", "sage", "slate", "taupe", "clay"}
+DEFAULT_FOLDER_COLOR = "sand"
 
 
 class ChatMessage(BaseModel):
@@ -72,10 +74,38 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(default_factory=list)
     model: Optional[Literal["general", "deep", "lite", "auto"]] = "auto"
     last_model_used: Optional[str] = None
+    conversation_id: Optional[str] = None
+    folder_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
     response: str
+
+
+class FolderCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    color: Optional[str] = None
+
+
+class FolderUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    color: Optional[str] = None
+
+
+class ConversationCreateRequest(BaseModel):
+    folder_id: Optional[str] = None
+
+
+class ConversationUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    folder_id: Optional[str] = None
+
+
+class ConversationTurnRequest(BaseModel):
+    user_message: str = Field(..., min_length=1)
+    assistant_message: str = Field(..., min_length=1)
+    model_used: Optional[str] = None
+    sources: Optional[List[Dict[str, Any]]] = None
 
 
 class KnowledgeStore:
@@ -119,9 +149,100 @@ class KnowledgeStore:
 
                     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document_id
                         ON knowledge_chunks(document_id);
+
+                    CREATE TABLE IF NOT EXISTS folders (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL UNIQUE,
+                        color TEXT NOT NULL DEFAULT 'sand',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS folder_documents (
+                        id TEXT PRIMARY KEY,
+                        folder_id TEXT NOT NULL,
+                        filename TEXT NOT NULL,
+                        content_hash TEXT NOT NULL,
+                        size_bytes INTEGER NOT NULL,
+                        mime_type TEXT,
+                        chunk_count INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
+                        UNIQUE(folder_id, content_hash)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS folder_chunks (
+                        id TEXT PRIMARY KEY,
+                        document_id TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL,
+                        content TEXT NOT NULL,
+                        embedding_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY (document_id) REFERENCES folder_documents(id) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_folder_documents_folder_id
+                        ON folder_documents(folder_id);
+
+                    CREATE INDEX IF NOT EXISTS idx_folder_chunks_document_id
+                        ON folder_chunks(document_id);
+
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        folder_id TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        last_message_at TEXT NOT NULL,
+                        last_message_preview TEXT NOT NULL,
+                        message_count INTEGER NOT NULL DEFAULT 0,
+                        FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_conversations_folder_id
+                        ON conversations(folder_id);
+
+                    CREATE INDEX IF NOT EXISTS idx_conversations_last_message_at
+                        ON conversations(last_message_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS conversation_messages (
+                        id TEXT PRIMARY KEY,
+                        conversation_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        model_used TEXT,
+                        sources_json TEXT,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_id
+                        ON conversation_messages(conversation_id, created_at);
                     """
                 )
+                columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(folders)").fetchall()
+                }
+                if "color" not in columns:
+                    conn.execute(
+                        f"""
+                        ALTER TABLE folders
+                        ADD COLUMN color TEXT NOT NULL DEFAULT '{DEFAULT_FOLDER_COLOR}'
+                        """
+                    )
+                conn.execute(
+                    """
+                    UPDATE folders
+                    SET color = ?
+                    WHERE color IS NULL OR TRIM(color) = ''
+                    """,
+                    (DEFAULT_FOLDER_COLOR,),
+                )
                 conn.commit()
+
+    def _current_ts(self) -> str:
+        return str(int(time.time()))
 
     def get_document_by_hash(self, content_hash: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -133,6 +254,21 @@ class KnowledgeStore:
                     WHERE content_hash = ?
                     """,
                     (content_hash,),
+                ).fetchone()
+                return dict(row) if row else None
+
+    def get_folder_document_by_hash(
+        self, folder_id: str, content_hash: str
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT id, folder_id, filename, content_hash, size_bytes, mime_type, chunk_count, created_at
+                    FROM folder_documents
+                    WHERE folder_id = ? AND content_hash = ?
+                    """,
+                    (folder_id, content_hash),
                 ).fetchone()
                 return dict(row) if row else None
 
@@ -149,7 +285,7 @@ class KnowledgeStore:
         if len(chunks) != len(embeddings):
             raise ValueError("Chunks and embeddings length mismatch")
 
-        now = str(int(time.time()))
+        now = self._current_ts()
         document_id = str(uuid4())
 
         with self._lock:
@@ -200,6 +336,80 @@ class KnowledgeStore:
             "created_at": now,
         }
 
+    def insert_folder_document_with_chunks(
+        self,
+        *,
+        folder_id: str,
+        filename: str,
+        content_hash: str,
+        size_bytes: int,
+        mime_type: Optional[str],
+        chunks: List[str],
+        embeddings: List[List[float]],
+    ) -> Dict[str, Any]:
+        if len(chunks) != len(embeddings):
+            raise ValueError("Chunks and embeddings length mismatch")
+
+        now = self._current_ts()
+        document_id = str(uuid4())
+
+        with self._lock:
+            with self._connect() as conn:
+                folder = conn.execute(
+                    "SELECT id FROM folders WHERE id = ?",
+                    (folder_id,),
+                ).fetchone()
+                if folder is None:
+                    raise ValueError("Folder not found")
+
+                conn.execute(
+                    """
+                    INSERT INTO folder_documents (
+                        id, folder_id, filename, content_hash, size_bytes, mime_type, chunk_count, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        document_id,
+                        folder_id,
+                        filename,
+                        content_hash,
+                        size_bytes,
+                        mime_type,
+                        len(chunks),
+                        now,
+                    ),
+                )
+
+                for index, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
+                    conn.execute(
+                        """
+                        INSERT INTO folder_chunks (
+                            id, document_id, chunk_index, content, embedding_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(uuid4()),
+                            document_id,
+                            index,
+                            chunk_text,
+                            json.dumps(embedding),
+                            now,
+                        ),
+                    )
+
+                conn.commit()
+
+        return {
+            "id": document_id,
+            "folder_id": folder_id,
+            "filename": filename,
+            "content_hash": content_hash,
+            "size_bytes": size_bytes,
+            "mime_type": mime_type,
+            "chunk_count": len(chunks),
+            "created_at": now,
+        }
+
     def list_documents(self) -> List[Dict[str, Any]]:
         with self._lock:
             with self._connect() as conn:
@@ -209,6 +419,20 @@ class KnowledgeStore:
                     FROM knowledge_documents
                     ORDER BY created_at DESC
                     """
+                ).fetchall()
+                return [dict(row) for row in rows]
+
+    def list_folder_documents(self, folder_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, folder_id, filename, content_hash, size_bytes, mime_type, chunk_count, created_at
+                    FROM folder_documents
+                    WHERE folder_id = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (folder_id,),
                 ).fetchall()
                 return [dict(row) for row in rows]
 
@@ -225,6 +449,29 @@ class KnowledgeStore:
                 chunk_count = int(row["chunk_count"])
                 conn.execute("DELETE FROM knowledge_chunks WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM knowledge_documents WHERE id = ?", (document_id,))
+                conn.commit()
+                return {"deleted": True, "chunk_count": chunk_count}
+
+    def delete_folder_document(self, folder_id: str, document_id: str) -> Dict[str, Any]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT chunk_count
+                    FROM folder_documents
+                    WHERE id = ? AND folder_id = ?
+                    """,
+                    (document_id, folder_id),
+                ).fetchone()
+                if row is None:
+                    return {"deleted": False, "chunk_count": 0}
+
+                chunk_count = int(row["chunk_count"])
+                conn.execute("DELETE FROM folder_chunks WHERE document_id = ?", (document_id,))
+                conn.execute(
+                    "DELETE FROM folder_documents WHERE id = ? AND folder_id = ?",
+                    (document_id, folder_id),
+                )
                 conn.commit()
                 return {"deleted": True, "chunk_count": chunk_count}
 
@@ -245,6 +492,482 @@ class KnowledgeStore:
                     """
                 ).fetchall()
                 return [dict(row) for row in rows]
+
+    def get_folder_chunks(self, folder_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        c.id,
+                        d.id AS document_id,
+                        d.folder_id AS folder_id,
+                        f.name AS folder_name,
+                        c.chunk_index,
+                        c.content,
+                        c.embedding_json,
+                        d.filename
+                    FROM folder_chunks c
+                    JOIN folder_documents d ON c.document_id = d.id
+                    JOIN folders f ON d.folder_id = f.id
+                    WHERE d.folder_id = ?
+                    """,
+                    (folder_id,),
+                ).fetchall()
+                return [dict(row) for row in rows]
+
+    def list_folders(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        f.id,
+                        f.name,
+                        f.color,
+                        f.created_at,
+                        f.updated_at,
+                        COALESCE(cc.chat_count, 0) AS chat_count,
+                        COALESCE(dc.document_count, 0) AS document_count
+                    FROM folders f
+                    LEFT JOIN (
+                        SELECT folder_id, COUNT(*) AS chat_count
+                        FROM conversations
+                        WHERE folder_id IS NOT NULL
+                        GROUP BY folder_id
+                    ) cc ON cc.folder_id = f.id
+                    LEFT JOIN (
+                        SELECT folder_id, COUNT(*) AS document_count
+                        FROM folder_documents
+                        GROUP BY folder_id
+                    ) dc ON dc.folder_id = f.id
+                    ORDER BY f.updated_at DESC, f.created_at DESC
+                    """
+                ).fetchall()
+                return [dict(row) for row in rows]
+
+    def get_folder(self, folder_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT id, name, color, created_at, updated_at
+                    FROM folders
+                    WHERE id = ?
+                    """,
+                    (folder_id,),
+                ).fetchone()
+                return dict(row) if row else None
+
+    def create_folder(self, name: str, color: str) -> Dict[str, Any]:
+        now = self._current_ts()
+        folder_id = str(uuid4())
+
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO folders (id, name, color, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (folder_id, name.strip(), color, now, now),
+                )
+                conn.commit()
+
+        return {
+            "id": folder_id,
+            "name": name.strip(),
+            "color": color,
+            "created_at": now,
+            "updated_at": now,
+            "chat_count": 0,
+            "document_count": 0,
+        }
+
+    def update_folder(
+        self,
+        folder_id: str,
+        *,
+        name: Optional[str] = None,
+        color: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        now = self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                assignments: List[str] = []
+                params: List[Any] = []
+
+                if name is not None:
+                    assignments.append("name = ?")
+                    params.append(name.strip())
+
+                if color is not None:
+                    assignments.append("color = ?")
+                    params.append(color)
+
+                assignments.append("updated_at = ?")
+                params.append(now)
+                params.append(folder_id)
+
+                result = conn.execute(
+                    f"""
+                    UPDATE folders
+                    SET {", ".join(assignments)}
+                    WHERE id = ?
+                    """,
+                    tuple(params),
+                )
+                conn.commit()
+                if result.rowcount == 0:
+                    return None
+
+                row = conn.execute(
+                    """
+                    SELECT id, name, color, created_at, updated_at
+                    FROM folders
+                    WHERE id = ?
+                    """,
+                    (folder_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+
+                chat_count = conn.execute(
+                    "SELECT COUNT(*) AS count FROM conversations WHERE folder_id = ?",
+                    (folder_id,),
+                ).fetchone()["count"]
+                document_count = conn.execute(
+                    "SELECT COUNT(*) AS count FROM folder_documents WHERE folder_id = ?",
+                    (folder_id,),
+                ).fetchone()["count"]
+
+                data = dict(row)
+                data["chat_count"] = int(chat_count)
+                data["document_count"] = int(document_count)
+                return data
+
+    def delete_folder(self, folder_id: str) -> Dict[str, Any]:
+        with self._lock:
+            with self._connect() as conn:
+                exists = conn.execute(
+                    "SELECT id FROM folders WHERE id = ?",
+                    (folder_id,),
+                ).fetchone()
+                if exists is None:
+                    return {
+                        "deleted": False,
+                        "conversations_deleted": 0,
+                        "documents_deleted": 0,
+                        "chunks_deleted": 0,
+                    }
+
+                conversations_deleted = int(
+                    conn.execute(
+                        "SELECT COUNT(*) AS count FROM conversations WHERE folder_id = ?",
+                        (folder_id,),
+                    ).fetchone()["count"]
+                )
+                documents_deleted = int(
+                    conn.execute(
+                        "SELECT COUNT(*) AS count FROM folder_documents WHERE folder_id = ?",
+                        (folder_id,),
+                    ).fetchone()["count"]
+                )
+                chunks_deleted = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) AS count
+                        FROM folder_chunks c
+                        JOIN folder_documents d ON c.document_id = d.id
+                        WHERE d.folder_id = ?
+                        """,
+                        (folder_id,),
+                    ).fetchone()["count"]
+                )
+
+                conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+                conn.commit()
+                return {
+                    "deleted": True,
+                    "conversations_deleted": conversations_deleted,
+                    "documents_deleted": documents_deleted,
+                    "chunks_deleted": chunks_deleted,
+                }
+
+    def _conversation_summary_row(
+        self, conn: sqlite3.Connection, conversation_id: str
+    ) -> Optional[Dict[str, Any]]:
+        row = conn.execute(
+            """
+            SELECT
+                c.id,
+                c.title,
+                c.folder_id,
+                f.name AS folder_name,
+                c.created_at,
+                c.updated_at,
+                c.last_message_at,
+                c.last_message_preview,
+                c.message_count
+            FROM conversations c
+            LEFT JOIN folders f ON f.id = c.folder_id
+            WHERE c.id = ?
+            """,
+            (conversation_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_conversations(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        c.id,
+                        c.title,
+                        c.folder_id,
+                        f.name AS folder_name,
+                        c.created_at,
+                        c.updated_at,
+                        c.last_message_at,
+                        c.last_message_preview,
+                        c.message_count
+                    FROM conversations c
+                    LEFT JOIN folders f ON f.id = c.folder_id
+                    ORDER BY c.last_message_at DESC, c.updated_at DESC
+                    """
+                ).fetchall()
+                return [dict(row) for row in rows]
+
+    def create_conversation(self, folder_id: Optional[str]) -> Dict[str, Any]:
+        now = self._current_ts()
+        conversation_id = str(uuid4())
+
+        with self._lock:
+            with self._connect() as conn:
+                if folder_id:
+                    folder = conn.execute(
+                        "SELECT id FROM folders WHERE id = ?",
+                        (folder_id,),
+                    ).fetchone()
+                    if folder is None:
+                        raise ValueError("Folder not found")
+
+                conn.execute(
+                    """
+                    INSERT INTO conversations (
+                        id, title, folder_id, created_at, updated_at, last_message_at, last_message_preview, message_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        conversation_id,
+                        "New chat",
+                        folder_id,
+                        now,
+                        now,
+                        now,
+                        "",
+                        0,
+                    ),
+                )
+                conn.commit()
+
+                summary = self._conversation_summary_row(conn, conversation_id)
+                if summary is None:
+                    raise ValueError("Failed to create conversation")
+                return summary
+
+    def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                return self._conversation_summary_row(conn, conversation_id)
+
+    def get_conversation_folder_id(self, conversation_id: str) -> Optional[str]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT folder_id FROM conversations WHERE id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                return row["folder_id"]
+
+    def get_conversation_messages(self, conversation_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, conversation_id, role, content, model_used, sources_json, created_at
+                    FROM conversation_messages
+                    WHERE conversation_id = ?
+                    ORDER BY created_at ASC, rowid ASC
+                    """,
+                    (conversation_id,),
+                ).fetchall()
+
+                messages: List[Dict[str, Any]] = []
+                for row in rows:
+                    item = dict(row)
+                    sources_json = item.pop("sources_json")
+                    try:
+                        item["sources"] = json.loads(sources_json) if sources_json else []
+                    except Exception:
+                        item["sources"] = []
+                    messages.append(item)
+                return messages
+
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: Optional[str] = None,
+        set_folder: bool = False,
+        folder_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                exists = conn.execute(
+                    "SELECT id FROM conversations WHERE id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                if exists is None:
+                    return None
+
+                assignments: List[str] = []
+                params: List[Any] = []
+
+                if title is not None:
+                    assignments.append("title = ?")
+                    params.append(title.strip())
+
+                if set_folder:
+                    if folder_id is not None:
+                        folder = conn.execute(
+                            "SELECT id FROM folders WHERE id = ?",
+                            (folder_id,),
+                        ).fetchone()
+                        if folder is None:
+                            raise ValueError("Folder not found")
+                    assignments.append("folder_id = ?")
+                    params.append(folder_id)
+
+                if not assignments:
+                    return self._conversation_summary_row(conn, conversation_id)
+
+                assignments.append("updated_at = ?")
+                params.append(self._current_ts())
+                params.append(conversation_id)
+
+                conn.execute(
+                    f"UPDATE conversations SET {', '.join(assignments)} WHERE id = ?",
+                    tuple(params),
+                )
+                conn.commit()
+                return self._conversation_summary_row(conn, conversation_id)
+
+    def delete_conversation(self, conversation_id: str) -> Dict[str, Any]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id FROM conversations WHERE id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                if row is None:
+                    return {"deleted": False}
+
+                conn.execute(
+                    "DELETE FROM conversations WHERE id = ?",
+                    (conversation_id,),
+                )
+                conn.commit()
+                return {"deleted": True}
+
+    def _derive_title_from_message(self, user_message: str) -> str:
+        normalized = " ".join(user_message.strip().split())
+        if not normalized:
+            return "New chat"
+        if len(normalized) <= 60:
+            return normalized
+        return f"{normalized[:57].rstrip()}..."
+
+    def append_turn(
+        self,
+        conversation_id: str,
+        *,
+        user_message: str,
+        assistant_message: str,
+        model_used: Optional[str],
+        sources: Optional[List[Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
+        now = self._current_ts()
+
+        with self._lock:
+            with self._connect() as conn:
+                conversation = conn.execute(
+                    "SELECT title, message_count FROM conversations WHERE id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                if conversation is None:
+                    return None
+
+                conn.execute(
+                    """
+                    INSERT INTO conversation_messages (
+                        id, conversation_id, role, content, model_used, sources_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()),
+                        conversation_id,
+                        "user",
+                        user_message,
+                        None,
+                        None,
+                        now,
+                    ),
+                )
+
+                conn.execute(
+                    """
+                    INSERT INTO conversation_messages (
+                        id, conversation_id, role, content, model_used, sources_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()),
+                        conversation_id,
+                        "assistant",
+                        assistant_message,
+                        model_used,
+                        json.dumps(sources or []),
+                        now,
+                    ),
+                )
+
+                title = str(conversation["title"])
+                message_count = int(conversation["message_count"])
+                next_title = title
+                if title == "New chat" and message_count == 0:
+                    next_title = self._derive_title_from_message(user_message)
+
+                preview = " ".join(assistant_message.strip().split())[:200]
+
+                conn.execute(
+                    """
+                    UPDATE conversations
+                    SET
+                        title = ?,
+                        updated_at = ?,
+                        last_message_at = ?,
+                        last_message_preview = ?,
+                        message_count = message_count + 2
+                    WHERE id = ?
+                    """,
+                    (next_title, now, now, preview, conversation_id),
+                )
+                conn.commit()
+                return self._conversation_summary_row(conn, conversation_id)
 
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -304,6 +1027,16 @@ def looks_like_text(decoded_text: str) -> bool:
     printable = sum(ch.isprintable() or ch in "\n\r\t" for ch in sample)
     ratio = printable / max(len(sample), 1)
     return ratio >= 0.85
+
+
+def normalize_folder_color(color: Optional[str]) -> str:
+    if color is None:
+        return DEFAULT_FOLDER_COLOR
+
+    normalized = color.strip().lower()
+    if normalized not in FOLDER_COLOR_OPTIONS:
+        raise ValueError("Invalid folder color")
+    return normalized
 
 
 async def embed_texts(inputs: List[str], model_name: str = EMBEDDING_MODEL) -> List[List[float]]:
@@ -442,29 +1175,48 @@ def extract_text_for_knowledge(filename: str, content: bytes) -> Tuple[Optional[
     return None, "Unsupported or non-text binary file"
 
 
-async def retrieve_knowledge_context(query: str) -> Tuple[str, List[Dict[str, Any]]]:
+async def retrieve_knowledge_context(
+    query: str, folder_id: Optional[str] = None
+) -> Tuple[str, List[Dict[str, Any]]]:
     store = get_knowledge_store()
-    chunks = store.get_all_chunks()
-    if not chunks:
+    global_chunks = store.get_all_chunks()
+    folder_chunks = store.get_folder_chunks(folder_id) if folder_id else []
+
+    if not folder_chunks and not global_chunks:
         return "", []
 
     query_embedding = (await embed_texts([query]))[0]
 
-    scored: List[Tuple[float, Dict[str, Any]]] = []
-    for chunk in chunks:
+    scored_folder: List[Tuple[float, Dict[str, Any]]] = []
+    for chunk in folder_chunks:
         try:
             embedding = json.loads(chunk["embedding_json"])
             score = cosine_similarity(query_embedding, embedding)
             if score >= RETRIEVAL_MIN_SCORE:
-                scored.append((score, chunk))
+                scored_folder.append((score, chunk))
         except Exception:
             continue
 
-    if not scored:
+    scored_global: List[Tuple[float, Dict[str, Any]]] = []
+    for chunk in global_chunks:
+        try:
+            embedding = json.loads(chunk["embedding_json"])
+            score = cosine_similarity(query_embedding, embedding)
+            if score >= RETRIEVAL_MIN_SCORE:
+                scored_global.append((score, chunk))
+        except Exception:
+            continue
+
+    if not scored_folder and not scored_global:
         return "", []
 
-    scored.sort(key=lambda item: item[0], reverse=True)
-    selected = scored[:RETRIEVAL_TOP_K]
+    scored_folder.sort(key=lambda item: item[0], reverse=True)
+    scored_global.sort(key=lambda item: item[0], reverse=True)
+
+    selected_folder = scored_folder[:RETRIEVAL_TOP_K]
+    remaining_slots = max(RETRIEVAL_TOP_K - len(selected_folder), 0)
+    selected_global = scored_global[:remaining_slots]
+    selected = selected_folder + selected_global
 
     context_parts = [
         "Knowledge Base Context:",
@@ -476,18 +1228,31 @@ async def retrieve_knowledge_context(query: str) -> Tuple[str, List[Dict[str, An
     for score, chunk in selected:
         filename = chunk["filename"]
         chunk_index = int(chunk["chunk_index"])
-        context_parts.append(f"[Source: {filename} | chunk {chunk_index} | score {score:.3f}]")
+        source_type = "folder" if "folder_id" in chunk else "global"
+        if source_type == "folder":
+            folder_name = chunk.get("folder_name") or "Project"
+            source_label = f"Folder {folder_name}: {filename}"
+        else:
+            source_label = f"Global: {filename}"
+
+        context_parts.append(
+            f"[Source: {source_label} | chunk {chunk_index} | score {score:.3f}]"
+        )
         context_parts.append(chunk["content"])
         context_parts.append("")
 
-        sources.append(
-            {
-                "document_id": chunk["document_id"],
-                "filename": filename,
-                "chunk_index": chunk_index,
-                "score": round(score, 3),
-            }
-        )
+        source_record: Dict[str, Any] = {
+            "document_id": chunk["document_id"],
+            "filename": filename,
+            "chunk_index": chunk_index,
+            "score": round(score, 3),
+            "source_type": source_type,
+        }
+        if source_type == "folder":
+            source_record["folder_id"] = chunk.get("folder_id")
+            source_record["folder_name"] = chunk.get("folder_name")
+
+        sources.append(source_record)
 
     return "\n".join(context_parts).strip(), sources
 
@@ -813,10 +1578,18 @@ async def chat(request: ChatRequest):
                 consistency_enforced=consistency_enforced,
             )
 
+        effective_folder_id = request.folder_id
+        if effective_folder_id is None and request.conversation_id:
+            effective_folder_id = get_knowledge_store().get_conversation_folder_id(
+                request.conversation_id
+            )
+
         knowledge_context = ""
         knowledge_sources: List[Dict[str, Any]] = []
         try:
-            knowledge_context, knowledge_sources = await retrieve_knowledge_context(request.message)
+            knowledge_context, knowledge_sources = await retrieve_knowledge_context(
+                request.message, effective_folder_id
+            )
         except Exception as retrieval_error:
             print(
                 f"Knowledge retrieval warning: {type(retrieval_error).__name__}: {retrieval_error}",
@@ -1011,6 +1784,293 @@ async def delete_knowledge_file(document_id: str):
         "document_id": document_id,
         "chunk_count": result["chunk_count"],
     }
+
+
+@app.get("/folders")
+async def list_folders():
+    store = get_knowledge_store()
+    return {"folders": store.list_folders()}
+
+
+@app.post("/folders")
+async def create_folder(request: FolderCreateRequest):
+    store = get_knowledge_store()
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Folder name is required")
+    try:
+        color = normalize_folder_color(request.color)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid folder color")
+
+    try:
+        folder = store.create_folder(name, color)
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Folder name already exists")
+
+    return {"folder": folder}
+
+
+@app.patch("/folders/{folder_id}")
+async def rename_folder(folder_id: str, request: FolderUpdateRequest):
+    store = get_knowledge_store()
+    name = request.name.strip() if request.name is not None else None
+    if request.name is not None and not name:
+        raise HTTPException(status_code=400, detail="Folder name is required")
+    if request.name is None and request.color is None:
+        raise HTTPException(status_code=400, detail="No folder updates provided")
+
+    color: Optional[str] = None
+    if request.color is not None:
+        try:
+            color = normalize_folder_color(request.color)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid folder color")
+
+    try:
+        folder = store.update_folder(folder_id, name=name, color=color)
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Folder name already exists")
+
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    return {"folder": folder}
+
+
+@app.delete("/folders/{folder_id}")
+async def delete_folder(folder_id: str):
+    store = get_knowledge_store()
+    result = store.delete_folder(folder_id)
+    if not result["deleted"]:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    return {
+        "deleted": True,
+        "folder_id": folder_id,
+        "conversations_deleted": result["conversations_deleted"],
+        "documents_deleted": result["documents_deleted"],
+        "chunks_deleted": result["chunks_deleted"],
+    }
+
+
+@app.get("/folders/{folder_id}/files")
+async def list_folder_knowledge_files(folder_id: str):
+    store = get_knowledge_store()
+    if store.get_folder(folder_id) is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return {"documents": store.list_folder_documents(folder_id)}
+
+
+@app.post("/folders/{folder_id}/files")
+async def upload_folder_knowledge_files(folder_id: str, files: List[UploadFile] = File(...)):
+    store = get_knowledge_store()
+    if store.get_folder(folder_id) is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    results: List[Dict[str, Any]] = []
+
+    for file in files:
+        try:
+            content = await file.read()
+            if len(content) > MAX_KNOWLEDGE_UPLOAD_SIZE:
+                results.append(
+                    {
+                        "filename": file.filename,
+                        "status": "error",
+                        "reason": "File too large (max 25MB)",
+                    }
+                )
+                continue
+
+            text, extraction_error = extract_text_for_knowledge(file.filename, content)
+            if extraction_error:
+                results.append(
+                    {
+                        "filename": file.filename,
+                        "status": "unsupported",
+                        "reason": extraction_error,
+                    }
+                )
+                continue
+
+            if not text:
+                results.append(
+                    {
+                        "filename": file.filename,
+                        "status": "unsupported",
+                        "reason": "No text extracted from file",
+                    }
+                )
+                continue
+
+            trimmed_text = text[:MAX_KNOWLEDGE_TEXT_CHARS]
+            chunks = chunk_text(trimmed_text)
+            if not chunks:
+                results.append(
+                    {
+                        "filename": file.filename,
+                        "status": "unsupported",
+                        "reason": "No meaningful text chunks could be produced",
+                    }
+                )
+                continue
+
+            content_hash = hashlib.sha256(content).hexdigest()
+            duplicate = store.get_folder_document_by_hash(folder_id, content_hash)
+            if duplicate:
+                results.append(
+                    {
+                        "filename": file.filename,
+                        "status": "duplicate",
+                        "reason": "Document with identical content already indexed in this folder",
+                        "document": duplicate,
+                    }
+                )
+                continue
+
+            embeddings = await embed_in_batches(chunks)
+            document = store.insert_folder_document_with_chunks(
+                folder_id=folder_id,
+                filename=file.filename,
+                content_hash=content_hash,
+                size_bytes=len(content),
+                mime_type=file.content_type,
+                chunks=chunks,
+                embeddings=embeddings,
+            )
+
+            results.append(
+                {
+                    "filename": file.filename,
+                    "status": "indexed",
+                    "document": document,
+                }
+            )
+        except Exception as e:
+            print(
+                f"Folder knowledge ingest error for {file.filename}: {e}",
+                file=sys.stderr,
+            )
+            results.append(
+                {
+                    "filename": file.filename,
+                    "status": "error",
+                    "reason": f"{type(e).__name__}: {e}",
+                }
+            )
+
+    return {"results": results}
+
+
+@app.delete("/folders/{folder_id}/files/{document_id}")
+async def delete_folder_knowledge_file(folder_id: str, document_id: str):
+    store = get_knowledge_store()
+    if store.get_folder(folder_id) is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    result = store.delete_folder_document(folder_id, document_id)
+    if not result["deleted"]:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return {
+        "deleted": True,
+        "document_id": document_id,
+        "chunk_count": result["chunk_count"],
+    }
+
+
+@app.get("/conversations")
+async def list_conversations():
+    store = get_knowledge_store()
+    return {"conversations": store.list_conversations()}
+
+
+@app.post("/conversations")
+async def create_conversation(request: ConversationCreateRequest):
+    store = get_knowledge_store()
+    try:
+        conversation = store.create_conversation(request.folder_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+    return {"conversation": conversation}
+
+
+@app.get("/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    store = get_knowledge_store()
+    conversation = store.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return {
+        "conversation": conversation,
+        "messages": store.get_conversation_messages(conversation_id),
+    }
+
+
+@app.patch("/conversations/{conversation_id}")
+async def update_conversation(conversation_id: str, request: ConversationUpdateRequest):
+    store = get_knowledge_store()
+    payload = request.model_dump(exclude_unset=True)
+
+    title = payload.get("title")
+    if title is not None:
+        title = title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Conversation title is required")
+
+    set_folder = "folder_id" in payload
+    folder_id = payload.get("folder_id")
+
+    try:
+        conversation = store.update_conversation(
+            conversation_id,
+            title=title,
+            set_folder=set_folder,
+            folder_id=folder_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return {"conversation": conversation}
+
+
+@app.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    store = get_knowledge_store()
+    result = store.delete_conversation(conversation_id)
+    if not result["deleted"]:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return {"deleted": True, "conversation_id": conversation_id}
+
+
+@app.post("/conversations/{conversation_id}/turns")
+async def append_conversation_turn(conversation_id: str, request: ConversationTurnRequest):
+    user_message = request.user_message.strip()
+    assistant_message = request.assistant_message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="User message is required")
+    if not assistant_message:
+        raise HTTPException(status_code=400, detail="Assistant message is required")
+
+    store = get_knowledge_store()
+    conversation = store.append_turn(
+        conversation_id,
+        user_message=user_message,
+        assistant_message=assistant_message,
+        model_used=request.model_used,
+        sources=request.sources,
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return {"saved": True, "conversation": conversation}
 
 
 @app.get("/health")

@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import FilesTab from "./FilesTab";
 
 afterEach(() => {
+  cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -108,5 +109,62 @@ describe("FilesTab", () => {
     await waitFor(() => {
       expect(screen.queryByText("policy.txt")).not.toBeInTheDocument();
     });
+  });
+
+  it("uses folder knowledge endpoints when folder scope is selected", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ documents: [] }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            documents: [
+              {
+                id: "folder-doc-1",
+                folder_id: "folder-1",
+                filename: "folder-sop.txt",
+                content_hash: "hash",
+                size_bytes: 256,
+                chunk_count: 2,
+                created_at: "1700000000",
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <FilesTab
+        folders={[
+          {
+            id: "folder-1",
+            name: "Operations",
+            created_at: "1700000000",
+            updated_at: "1700000000",
+            chat_count: 0,
+            document_count: 0,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /folder knowledge/i }));
+    fireEvent.change(
+      screen.getByRole("combobox", { name: /folder selection for files scope/i }),
+      { target: { value: "folder-1" } },
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://localhost:8090/folders/folder-1/files",
+      );
+    });
+
+    expect(await screen.findByText("folder-sop.txt")).toBeInTheDocument();
   });
 });

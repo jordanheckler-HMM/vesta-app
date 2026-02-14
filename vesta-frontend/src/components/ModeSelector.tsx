@@ -6,6 +6,7 @@ interface ModeSelectorProps {
   selectedMode: ThinkingMode;
   onModeChange: (mode: ThinkingMode) => void;
   compact?: boolean;
+  inline?: boolean;
 }
 
 const modes: { id: ThinkingMode; label: string; shortLabel: string; icon: React.ReactNode }[] = [
@@ -15,7 +16,33 @@ const modes: { id: ThinkingMode; label: string; shortLabel: string; icon: React.
   { id: "general", label: "General Question", shortLabel: "General", icon: <MessageCircle className="w-4 h-4" /> },
 ];
 
-const ModeSelector = ({ selectedMode, onModeChange, compact = false }: ModeSelectorProps) => {
+const ModeSelector = ({ selectedMode, onModeChange, compact = false, inline = false }: ModeSelectorProps) => {
+  if (inline) {
+    return (
+      <div className="flex items-center gap-2">
+        <p className="text-[11px] font-medium text-muted-foreground whitespace-nowrap">Prompt</p>
+        <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Thinking mode">
+          {modes.map((mode) => (
+            <button
+              key={mode.id}
+              type="button"
+              role="radio"
+              aria-checked={selectedMode === mode.id}
+              onClick={() => onModeChange(mode.id)}
+              className={`px-2.5 py-1 text-[11px] rounded-md border transition-colors ${
+                selectedMode === mode.id
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-background hover:bg-muted text-muted-foreground"
+              }`}
+            >
+              {mode.shortLabel}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="border-b border-vesta-header-border bg-card">
       <div className={`max-w-4xl mx-auto px-6 ${compact ? "py-2.5" : "py-5"}`}>

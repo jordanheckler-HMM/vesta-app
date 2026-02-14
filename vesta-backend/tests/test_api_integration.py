@@ -244,3 +244,268 @@ def test_chat_continues_when_retrieval_fails(monkeypatch):
     assert response.status_code == 200
     assert '"content": "fallback response"' in response.text
     assert captured["sources"] == []
+
+
+def test_folder_crud_and_cascade_delete(monkeypatch):
+    monkeypatch.setattr(main, "embed_texts", _fake_embed_texts)
+
+    with TestClient(main.app) as client:
+        created = client.post("/folders", json={"name": "HR Project"})
+        assert created.status_code == 200
+        assert created.json()["folder"]["color"] == "sand"
+        folder_id = created.json()["folder"]["id"]
+
+        renamed = client.patch(f"/folders/{folder_id}", json={"name": "HR Playbook"})
+        assert renamed.status_code == 200
+        assert renamed.json()["folder"]["name"] == "HR Playbook"
+        assert renamed.json()["folder"]["color"] == "sand"
+
+        file_upload = client.post(
+            f"/folders/{folder_id}/files",
+            files=[("files", ("hr.txt", b"HR policy SOP", "text/plain"))],
+        )
+        assert file_upload.status_code == 200
+        assert file_upload.json()["results"][0]["status"] == "indexed"
+
+        conversation = client.post("/conversations", json={"folder_id": folder_id})
+        assert conversation.status_code == 200
+        conversation_id = conversation.json()["conversation"]["id"]
+
+        turn = client.post(
+            f"/conversations/{conversation_id}/turns",
+            json={
+                "user_message": "What is the PTO policy?",
+                "assistant_message": "Use the HR SOP.",
+                "model_used": "general",
+                "sources": [],
+            },
+        )
+        assert turn.status_code == 200
+
+        deleted = client.delete(f"/folders/{folder_id}")
+        assert deleted.status_code == 200
+        body = deleted.json()
+        assert body["deleted"] is True
+        assert body["conversations_deleted"] == 1
+        assert body["documents_deleted"] == 1
+        assert body["chunks_deleted"] > 0
+
+        folders_after = client.get("/folders")
+        assert folders_after.status_code == 200
+        assert folders_after.json()["folders"] == []
+
+        conversations_after = client.get("/conversations")
+        assert conversations_after.status_code == 200
+        assert conversations_after.json()["conversations"] == []
+
+        folder_files_after = client.get(f"/folders/{folder_id}/files")
+        assert folder_files_after.status_code == 404
+
+
+def test_folder_upload_duplicate_and_global_independent(monkeypatch):
+    monkeypatch.setattr(main, "embed_texts", _fake_embed_texts)
+
+    with TestClient(main.app) as client:
+        folder = client.post("/folders", json={"name": "Ops"})
+        assert folder.status_code == 200
+        folder_id = folder.json()["folder"]["id"]
+
+        global_upload = client.post(
+            "/knowledge/files",
+            files=[("files", ("same.txt", b"same knowledge content", "text/plain"))],
+        )
+        assert global_upload.status_code == 200
+        assert global_upload.json()["results"][0]["status"] == "indexed"
+
+        folder_upload_first = client.post(
+            f"/folders/{folder_id}/files",
+            files=[("files", ("same-folder.txt", b"same knowledge content", "text/plain"))],
+        )
+        folder_upload_second = client.post(
+            f"/folders/{folder_id}/files",
+            files=[("files", ("same-folder-copy.txt", b"same knowledge content", "text/plain"))],
+        )
+
+        assert folder_upload_first.status_code == 200
+        assert folder_upload_first.json()["results"][0]["status"] == "indexed"
+        assert folder_upload_second.status_code == 200
+        assert folder_upload_second.json()["results"][0]["status"] == "duplicate"
+
+
+def test_folder_file_delete_removes_folder_document_only(monkeypatch):
+    monkeypatch.setattr(main, "embed_texts", _fake_embed_texts)
+
+    with TestClient(main.app) as client:
+        folder = client.post("/folders", json={"name": "Finance"})
+        folder_id = folder.json()["folder"]["id"]
+
+        upload = client.post(
+            f"/folders/{folder_id}/files",
+            files=[("files", ("budget.txt", b"finance SOP", "text/plain"))],
+        )
+        folder_document_id = upload.json()["results"][0]["document"]["id"]
+
+        delete = client.delete(f"/folders/{folder_id}/files/{folder_document_id}")
+        assert delete.status_code == 200
+        assert delete.json()["deleted"] is True
+
+        list_folder = client.get(f"/folders/{folder_id}/files")
+        assert list_folder.status_code == 200
+        assert list_folder.json()["documents"] == []
+
+
+def test_conversation_crud_move_and_turn_persistence(monkeypatch):
+    monkeypatch.setattr(main, "embed_texts", _fake_embed_texts)
+
+    with TestClient(main.app) as client:
+        created = client.post("/conversations", json={"folder_id": None})
+        assert created.status_code == 200
+        conversation_id = created.json()["conversation"]["id"]
+
+        renamed = client.patch(
+            f"/conversations/{conversation_id}",
+            json={"title": "Operations Follow-up"},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["conversation"]["title"] == "Operations Follow-up"
+
+        folder = client.post("/folders", json={"name": "Operations"})
+        folder_id = folder.json()["folder"]["id"]
+
+        moved = client.patch(
+            f"/conversations/{conversation_id}",
+            json={"folder_id": folder_id},
+        )
+        assert moved.status_code == 200
+        assert moved.json()["conversation"]["folder_id"] == folder_id
+
+        turn = client.post(
+            f"/conversations/{conversation_id}/turns",
+            json={
+                "user_message": "Summarize onboarding steps",
+                "assistant_message": "Here is the process.",
+                "model_used": "general",
+                "sources": [{"filename": "playbook.txt", "source_type": "global"}],
+            },
+        )
+        assert turn.status_code == 200
+        assert turn.json()["saved"] is True
+
+        loaded = client.get(f"/conversations/{conversation_id}")
+        assert loaded.status_code == 200
+        assert len(loaded.json()["messages"]) == 2
+        assert loaded.json()["messages"][1]["role"] == "assistant"
+        assert loaded.json()["messages"][1]["sources"][0]["filename"] == "playbook.txt"
+
+        moved_to_root = client.patch(
+            f"/conversations/{conversation_id}",
+            json={"folder_id": None},
+        )
+        assert moved_to_root.status_code == 200
+        assert moved_to_root.json()["conversation"]["folder_id"] is None
+
+        deleted = client.delete(f"/conversations/{conversation_id}")
+        assert deleted.status_code == 200
+
+        after = client.get("/conversations")
+        assert after.status_code == 200
+        assert after.json()["conversations"] == []
+
+
+def test_chat_folder_sources_prioritize_folder_then_global(monkeypatch):
+    monkeypatch.setattr(main, "embed_texts", _fake_embed_texts)
+    captured = {}
+
+    async def _fake_stream(model_name, prompt, sources=None):
+        captured["sources"] = sources or []
+        yield f"data: {main.json.dumps({'metadata': {'sources': sources or []}})}\n\n"
+        yield f"data: {main.json.dumps({'content': 'ok', 'done': True})}\n\n"
+
+    monkeypatch.setattr(main, "stream_ollama_response", _fake_stream)
+
+    with TestClient(main.app) as client:
+        folder = client.post("/folders", json={"name": "Sales"})
+        folder_id = folder.json()["folder"]["id"]
+
+        global_upload = client.post(
+            "/knowledge/files",
+            files=[("files", ("global.txt", b"policy SOP global", "text/plain"))],
+        )
+        assert global_upload.status_code == 200
+
+        folder_upload = client.post(
+            f"/folders/{folder_id}/files",
+            files=[("files", ("folder.txt", b"policy SOP folder", "text/plain"))],
+        )
+        assert folder_upload.status_code == 200
+
+        response = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "message": "What does policy say?",
+                "messages": [],
+                "model": "general",
+                "folder_id": folder_id,
+            },
+        )
+
+    assert response.status_code == 200
+    assert len(captured["sources"]) >= 1
+    assert captured["sources"][0]["source_type"] == "folder"
+
+
+def test_chat_infers_folder_from_conversation_id(monkeypatch):
+    monkeypatch.setattr(main, "embed_texts", _fake_embed_texts)
+    captured = {}
+
+    async def _capture_retrieval(query, folder_id=None):
+        captured["folder_id"] = folder_id
+        return "", []
+
+    async def _fake_stream(model_name, prompt, sources=None):
+        yield f"data: {main.json.dumps({'metadata': {'sources': sources or []}})}\n\n"
+        yield f"data: {main.json.dumps({'content': 'ok', 'done': True})}\n\n"
+
+    monkeypatch.setattr(main, "retrieve_knowledge_context", _capture_retrieval)
+    monkeypatch.setattr(main, "stream_ollama_response", _fake_stream)
+
+    with TestClient(main.app) as client:
+        folder = client.post("/folders", json={"name": "Legal"})
+        folder_id = folder.json()["folder"]["id"]
+
+        conversation = client.post("/conversations", json={"folder_id": folder_id})
+        conversation_id = conversation.json()["conversation"]["id"]
+
+        response = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "message": "hello",
+                "messages": [],
+                "model": "general",
+                "conversation_id": conversation_id,
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured["folder_id"] == folder_id
+
+
+def test_folder_color_create_update_and_validation():
+    with TestClient(main.app) as client:
+        created = client.post(
+            "/folders",
+            json={"name": "Product", "color": "sage"},
+        )
+        assert created.status_code == 200
+        folder = created.json()["folder"]
+        assert folder["color"] == "sage"
+
+        folder_id = folder["id"]
+        recolored = client.patch(f"/folders/{folder_id}", json={"color": "slate"})
+        assert recolored.status_code == 200
+        assert recolored.json()["folder"]["color"] == "slate"
+
+        invalid = client.post("/folders", json={"name": "Invalid", "color": "neon"})
+        assert invalid.status_code == 400

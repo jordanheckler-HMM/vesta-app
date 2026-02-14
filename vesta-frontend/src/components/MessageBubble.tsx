@@ -12,6 +12,9 @@ interface MessageBubbleProps {
     filename: string;
     chunk_index: number;
     score: number;
+    source_type?: "global" | "folder";
+    folder_id?: string;
+    folder_name?: string;
   }[];
 }
 
@@ -115,7 +118,9 @@ const MessageBubble = ({ role, content, isStreaming, modelUsed, sources }: Messa
                       className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground"
                       title={`${source.filename} | chunk ${source.chunk_index} | score ${source.score}`}
                     >
-                      {source.filename}#{source.chunk_index}
+                      {source.source_type === "folder"
+                        ? `Folder ${source.folder_name || "Project"}: ${source.filename}#${source.chunk_index}`
+                        : `Global: ${source.filename}#${source.chunk_index}`}
                     </span>
                   ))}
                 </div>

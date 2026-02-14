@@ -3,10 +3,11 @@ import { Button } from "@/components/ui/button";
 
 interface VestaHeaderProps {
   onClearChat?: () => void;
+  onNewChat?: () => void;
   compact?: boolean;
 }
 
-const VestaHeader = ({ onClearChat, compact = false }: VestaHeaderProps) => {
+const VestaHeader = ({ onClearChat, onNewChat, compact = false }: VestaHeaderProps) => {
   if (compact) {
     return (
       <header className="border-b border-vesta-header-border bg-card">
@@ -47,15 +48,15 @@ const VestaHeader = ({ onClearChat, compact = false }: VestaHeaderProps) => {
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-vesta-status" />
             <span>Local • Session chat • Local files knowledge</span>
           </div>
-          {onClearChat && (
+          {onNewChat && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={onClearChat}
+              onClick={onNewChat}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
               <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
-              Clear chat
+              New chat
             </Button>
           )}
         </div>

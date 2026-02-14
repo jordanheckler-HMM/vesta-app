@@ -44,6 +44,36 @@
     --vesta-status: 160 40% 45%;
     --vesta-header-border: 210 15% 90%;
 
+    --folder-sand-bg: 42 38% 84%;
+    --folder-sand-border: 36 28% 64%;
+    --folder-sand-text: 30 22% 26%;
+    --folder-sand-dot: 32 26% 40%;
+
+    --folder-stone-bg: 36 14% 84%;
+    --folder-stone-border: 34 10% 64%;
+    --folder-stone-text: 28 14% 26%;
+    --folder-stone-dot: 30 12% 38%;
+
+    --folder-sage-bg: 96 14% 82%;
+    --folder-sage-border: 96 10% 60%;
+    --folder-sage-text: 100 18% 24%;
+    --folder-sage-dot: 102 18% 36%;
+
+    --folder-slate-bg: 214 14% 83%;
+    --folder-slate-border: 214 12% 62%;
+    --folder-slate-text: 220 20% 24%;
+    --folder-slate-dot: 220 16% 38%;
+
+    --folder-taupe-bg: 24 20% 83%;
+    --folder-taupe-border: 24 16% 62%;
+    --folder-taupe-text: 24 22% 25%;
+    --folder-taupe-dot: 24 20% 38%;
+
+    --folder-clay-bg: 18 24% 83%;
+    --folder-clay-border: 18 20% 62%;
+    --folder-clay-text: 18 28% 25%;
+    --folder-clay-dot: 18 24% 38%;
+
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 240 5.3% 26.1%;
     --sidebar-primary: 240 5.9% 10%;
@@ -88,6 +118,36 @@
     --vesta-status: 160 40% 50%;
     --vesta-header-border: 220 15% 18%;
 
+    --folder-sand-bg: 34 18% 26%;
+    --folder-sand-border: 34 16% 40%;
+    --folder-sand-text: 38 38% 84%;
+    --folder-sand-dot: 38 34% 70%;
+
+    --folder-stone-bg: 28 8% 24%;
+    --folder-stone-border: 28 8% 38%;
+    --folder-stone-text: 28 18% 84%;
+    --folder-stone-dot: 30 14% 70%;
+
+    --folder-sage-bg: 104 12% 24%;
+    --folder-sage-border: 104 10% 38%;
+    --folder-sage-text: 104 24% 84%;
+    --folder-sage-dot: 104 20% 70%;
+
+    --folder-slate-bg: 216 14% 24%;
+    --folder-slate-border: 216 12% 38%;
+    --folder-slate-text: 212 32% 86%;
+    --folder-slate-dot: 212 24% 72%;
+
+    --folder-taupe-bg: 22 14% 24%;
+    --folder-taupe-border: 22 12% 38%;
+    --folder-taupe-text: 24 24% 84%;
+    --folder-taupe-dot: 24 20% 70%;
+
+    --folder-clay-bg: 16 18% 24%;
+    --folder-clay-border: 16 14% 38%;
+    --folder-clay-text: 18 28% 84%;
+    --folder-clay-dot: 18 24% 70%;
+
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
     --sidebar-primary: 224.3 76.3% 48%;
@@ -96,6 +156,80 @@
     --sidebar-accent-foreground: 240 4.8% 95.9%;
     --sidebar-border: 240 3.7% 15.9%;
     --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .manila {
+    --background: 40 46% 90%;
+    --foreground: 28 24% 22%;
+
+    --card: 40 52% 94%;
+    --card-foreground: 28 24% 22%;
+
+    --popover: 40 52% 94%;
+    --popover-foreground: 28 24% 22%;
+
+    --primary: 30 33% 38%;
+    --primary-foreground: 40 52% 96%;
+
+    --secondary: 38 36% 86%;
+    --secondary-foreground: 28 24% 24%;
+
+    --muted: 37 32% 84%;
+    --muted-foreground: 28 14% 40%;
+
+    --accent: 42 45% 88%;
+    --accent-foreground: 28 24% 24%;
+
+    --destructive: 7 64% 45%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 35 26% 74%;
+    --input: 35 26% 74%;
+    --ring: 30 33% 46%;
+
+    --vesta-assistant-bg: 42 45% 91%;
+    --vesta-user-bg: 30 33% 38%;
+    --vesta-status: 130 28% 40%;
+    --vesta-header-border: 35 24% 78%;
+
+    --folder-sand-bg: 40 38% 78%;
+    --folder-sand-border: 35 26% 60%;
+    --folder-sand-text: 29 22% 24%;
+    --folder-sand-dot: 31 24% 38%;
+
+    --folder-stone-bg: 34 20% 76%;
+    --folder-stone-border: 30 14% 58%;
+    --folder-stone-text: 28 18% 24%;
+    --folder-stone-dot: 29 16% 36%;
+
+    --folder-sage-bg: 76 18% 74%;
+    --folder-sage-border: 76 14% 56%;
+    --folder-sage-text: 84 20% 24%;
+    --folder-sage-dot: 84 18% 36%;
+
+    --folder-slate-bg: 212 10% 74%;
+    --folder-slate-border: 212 10% 56%;
+    --folder-slate-text: 216 18% 24%;
+    --folder-slate-dot: 216 14% 36%;
+
+    --folder-taupe-bg: 28 24% 74%;
+    --folder-taupe-border: 28 20% 56%;
+    --folder-taupe-text: 24 20% 24%;
+    --folder-taupe-dot: 24 18% 36%;
+
+    --folder-clay-bg: 22 26% 74%;
+    --folder-clay-border: 22 22% 56%;
+    --folder-clay-text: 20 24% 24%;
+    --folder-clay-dot: 20 22% 36%;
+
+    --sidebar-background: 39 44% 88%;
+    --sidebar-foreground: 28 24% 22%;
+    --sidebar-primary: 30 33% 38%;
+    --sidebar-primary-foreground: 40 52% 96%;
+    --sidebar-accent: 42 45% 88%;
+    --sidebar-accent-foreground: 28 24% 24%;
+    --sidebar-border: 35 26% 74%;
+    --sidebar-ring: 30 33% 46%;
   }
 }
 

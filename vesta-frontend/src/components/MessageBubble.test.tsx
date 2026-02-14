@@ -21,6 +21,6 @@ describe("MessageBubble", () => {
     );
 
     expect(screen.getByText("Sources")).toBeInTheDocument();
-    expect(screen.getByText("sop.txt#0")).toBeInTheDocument();
+    expect(screen.getByText("Global: sop.txt#0")).toBeInTheDocument();
   });
 });

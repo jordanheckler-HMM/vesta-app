@@ -90,14 +90,35 @@ macOS output:
   - Tray menu `Quit Vesta`
   - macOS quit shortcut (`Cmd+Q`)
 
+## Saved chats and folders
+
+- Main window includes a persistent left sidebar (ChatGPT/Claude style).
+- Chats are saved locally in SQLite and can be:
+  - created
+  - selected
+  - renamed
+  - deleted
+  - moved between uncategorized and folders
+- Header action is `New chat` (replaces `Clear chat` in main window).
+- You can create folders/projects and attach chats to a folder.
+- Deleting a folder cascades folder chats and folder-scoped documents.
+- Mini chat (`?view=mini`) is intentionally scratch-only and session-local; it does not save to sidebar history.
+
 ## Files knowledge base (persistent local RAG)
 
 - Main window includes a `Files` tab.
+- Files tab supports two scopes:
+  - `Global knowledge`
+  - `Folder knowledge` (for the selected folder/project)
 - Uploaded docs are stored locally in SQLite under:
   - `$VESTA_DATA_DIR/knowledge.db` if `VESTA_DATA_DIR` is set
   - otherwise `~/.vesta/knowledge.db`
+- Global and folder scopes both use Ollama embeddings with `qwen3-embedding:0.6b`.
 - Knowledge retrieval runs automatically on every `/chat` request.
-- Chat stream includes source metadata that is shown in assistant messages.
+- Retrieval policy:
+  - folder-scoped matches are ranked first when a chat is in a folder
+  - global matches are used as fallback
+- Chat stream includes source metadata shown in assistant messages (`Global: ...` or `Folder <name>: ...`).
 
 ### Supported ingestion behavior
 
@@ -157,4 +178,4 @@ curl http://localhost:11434/api/version
 
 - Knowledge storage is local and unencrypted by default.
 - OCR/transcoding for scanned/image-only files is not included.
-- Mini chat and main chat maintain separate live conversation state.
+- Mini chat is scratch-mode only and is not persisted to sidebar history.

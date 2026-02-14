@@ -16,6 +16,9 @@ export interface RetrievedSource {
   filename: string;
   chunk_index: number;
   score: number;
+  source_type?: "global" | "folder";
+  folder_id?: string;
+  folder_name?: string;
 }
 
 interface ChatInterfaceProps {

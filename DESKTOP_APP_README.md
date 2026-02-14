@@ -30,12 +30,37 @@ Output app:
 - Mini chat auto-hides when it loses focus.
 - Full quit only happens with tray menu `Quit Vesta` or `Cmd+Q`.
 
+## Main vs mini behavior
+
+- Main window:
+  - Persistent saved chats in left sidebar
+  - Folder/project organization
+  - Tabs: `Chat`, `Files`, `Settings`
+  - `New chat` action creates a saved conversation
+- Mini window:
+  - Compact scratch chat for quick prompts
+  - Session-only state (not written to saved sidebar history)
+
+## Saved chats and folders
+
+- Chats are stored in local SQLite.
+- Chat actions: create, select, rename, delete, move between folder/uncategorized.
+- Folder actions: create, rename, delete.
+- Folder delete is destructive and cascades:
+  - folder chats
+  - folder documents/chunks
+
 ## Files tab (persistent local knowledge)
 
 - Main window includes a `Files` tab.
+- Scope selector supports:
+  - `Global knowledge` (`/knowledge/files`)
+  - `Folder knowledge` (`/folders/{folder_id}/files`)
 - Uploaded docs are embedded with Ollama `qwen3-embedding:0.6b`.
-- Retrieved snippets are automatically injected into `/chat` requests.
-- Assistant messages show source labels for retrieved chunks.
+- Retrieval combines global + folder knowledge:
+  - folder matches first
+  - global fallback
+- Assistant messages show scope-aware source labels.
 
 ## Required Ollama models
 
