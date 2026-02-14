@@ -1,7 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ThemeSettingsTab from "./ThemeSettingsTab";
+
+afterEach(() => {
+  cleanup();
+});
 
 describe("ThemeSettingsTab", () => {
   it("calls onThemeChange with the selected style", () => {
@@ -12,5 +16,33 @@ describe("ThemeSettingsTab", () => {
     fireEvent.click(screen.getByRole("radio", { name: /dark mode/i }));
 
     expect(onThemeChange).toHaveBeenCalledWith("dark");
+  });
+
+  it("updates and saves model mapping from dropdowns", () => {
+    const onModelSettingChange = vi.fn();
+    const onSaveModelSettings = vi.fn();
+
+    render(
+      <ThemeSettingsTab
+        theme="light"
+        onThemeChange={vi.fn()}
+        modelSettings={{
+          lite: "model-a",
+          general: "model-b",
+          deep: "model-c",
+        }}
+        availableModels={["model-a", "model-b", "model-c", "model-d"]}
+        onModelSettingChange={onModelSettingChange}
+        onSaveModelSettings={onSaveModelSettings}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/lite model/i), {
+      target: { value: "model-d" },
+    });
+    expect(onModelSettingChange).toHaveBeenCalledWith("lite", "model-d");
+
+    fireEvent.click(screen.getByRole("button", { name: /save model mapping/i }));
+    expect(onSaveModelSettings).toHaveBeenCalled();
   });
 });

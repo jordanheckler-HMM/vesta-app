@@ -12,7 +12,9 @@ import ChatSidebar, {
 import FilesTab from "@/components/FilesTab";
 import ModeSelector, { ThinkingMode } from "@/components/ModeSelector";
 import ModelSelector, { ModelType } from "@/components/ModelSelector";
-import ThemeSettingsTab from "@/components/ThemeSettingsTab";
+import ThemeSettingsTab, {
+  type ModelSettingsValues,
+} from "@/components/ThemeSettingsTab";
 import VestaFooter from "@/components/VestaFooter";
 import VestaHeader from "@/components/VestaHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -55,6 +57,12 @@ interface FolderResponse {
   folder: FolderSummary;
 }
 
+interface ModelSettingsResponse {
+  configured_models: ModelSettingsValues;
+  available_models: string[];
+  ollama_connected: boolean;
+}
+
 interface IndexProps {
   isMiniView?: boolean;
 }
@@ -81,6 +89,15 @@ const Index = ({ isMiniView = false }: IndexProps) => {
   >(null);
   const [isSidebarLoading, setIsSidebarLoading] = useState(false);
   const [isConversationLoading, setIsConversationLoading] = useState(false);
+  const [modelSettings, setModelSettings] = useState<ModelSettingsValues | null>(
+    null,
+  );
+  const [draftModelSettings, setDraftModelSettings] =
+    useState<ModelSettingsValues | null>(null);
+  const [availableOllamaModels, setAvailableOllamaModels] = useState<string[]>([]);
+  const [isOllamaConnected, setIsOllamaConnected] = useState(true);
+  const [isModelSettingsLoading, setIsModelSettingsLoading] = useState(false);
+  const [isModelSettingsSaving, setIsModelSettingsSaving] = useState(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const initializedMainRef = useRef(false);
@@ -196,6 +213,47 @@ const Index = ({ isMiniView = false }: IndexProps) => {
       }
     })();
   }, [isMiniView, loadConversation, refreshSidebarData]);
+
+  const loadModelSettings = useCallback(
+    async (showErrorToast = false) => {
+      if (isMiniView) {
+        return;
+      }
+
+      setIsModelSettingsLoading(true);
+      try {
+        const response = await fetch(`${BACKEND_BASE_URL}/settings/models`);
+        if (!response.ok) {
+          throw new Error("Failed to load model settings");
+        }
+
+        const body = (await response.json()) as ModelSettingsResponse;
+        setModelSettings(body.configured_models);
+        setDraftModelSettings(body.configured_models);
+        setAvailableOllamaModels(body.available_models || []);
+        setIsOllamaConnected(body.ollama_connected !== false);
+      } catch (error) {
+        console.error("Failed to load model settings", error);
+        if (showErrorToast) {
+          toast({
+            variant: "destructive",
+            title: "Could not load model settings",
+            description: "Please verify Ollama is running and try again.",
+          });
+        }
+      } finally {
+        setIsModelSettingsLoading(false);
+      }
+    },
+    [isMiniView],
+  );
+
+  useEffect(() => {
+    if (isMiniView || activeTab !== "settings" || modelSettings) {
+      return;
+    }
+    void loadModelSettings(false);
+  }, [activeTab, isMiniView, loadModelSettings, modelSettings]);
 
   const resetChatState = () => {
     if (abortControllerRef.current) {
@@ -737,6 +795,65 @@ const Index = ({ isMiniView = false }: IndexProps) => {
     }
   };
 
+  const handleModelSettingChange = (
+    profile: "lite" | "general" | "deep",
+    modelName: string,
+  ) => {
+    setDraftModelSettings((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [profile]: modelName,
+      };
+    });
+  };
+
+  const handleSaveModelSettings = async () => {
+    if (!draftModelSettings) {
+      return;
+    }
+
+    setIsModelSettingsSaving(true);
+    try {
+      const response = await fetch(`${BACKEND_BASE_URL}/settings/models`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(draftModelSettings),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(
+          errorBody.detail || "Failed to save model settings",
+        );
+      }
+
+      const body = (await response.json()) as ModelSettingsResponse;
+      setModelSettings(body.configured_models);
+      setDraftModelSettings(body.configured_models);
+      setAvailableOllamaModels(body.available_models || []);
+      setIsOllamaConnected(body.ollama_connected !== false);
+      toast({
+        title: "Model mapping saved",
+        description: "New Lite, General, and Deep models will be used for chat routing.",
+      });
+    } catch (error) {
+      console.error("Failed to save model settings", error);
+      toast({
+        variant: "destructive",
+        title: "Could not save model mapping",
+        description:
+          error instanceof Error ? error.message : "Please try again.",
+      });
+    } finally {
+      setIsModelSettingsSaving(false);
+    }
+  };
+
   const chatPanel = (
     <>
       {isMiniView && (
@@ -828,8 +945,8 @@ const Index = ({ isMiniView = false }: IndexProps) => {
               </div>
             </div>
 
-            <TabsContent value="chat" className="flex-1 flex flex-col min-h-0 mt-0">
-              {chatPanel}
+            <TabsContent value="chat" className="flex-1 min-h-0 mt-0">
+              <div className="flex h-full min-h-0 flex-col">{chatPanel}</div>
             </TabsContent>
 
             <TabsContent value="files" className="flex-1 mt-0 overflow-y-auto">
@@ -840,7 +957,18 @@ const Index = ({ isMiniView = false }: IndexProps) => {
             </TabsContent>
 
             <TabsContent value="settings" className="flex-1 mt-0 overflow-y-auto">
-              <ThemeSettingsTab theme={theme} onThemeChange={setTheme} />
+              <ThemeSettingsTab
+                theme={theme}
+                onThemeChange={setTheme}
+                modelSettings={draftModelSettings}
+                availableModels={availableOllamaModels}
+                ollamaConnected={isOllamaConnected}
+                loadingModels={isModelSettingsLoading}
+                savingModels={isModelSettingsSaving}
+                onModelSettingChange={handleModelSettingChange}
+                onSaveModelSettings={handleSaveModelSettings}
+                onRefreshModels={() => loadModelSettings(true)}
+              />
             </TabsContent>
           </Tabs>
         </div>

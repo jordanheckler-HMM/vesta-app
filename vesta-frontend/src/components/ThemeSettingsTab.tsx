@@ -1,10 +1,28 @@
-import { Brush } from "lucide-react";
+import { useMemo } from "react";
+import { Brush, RefreshCw } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import type { AppTheme } from "@/hooks/use-app-theme";
+
+type ModelProfileKey = "lite" | "general" | "deep";
+
+export interface ModelSettingsValues {
+  lite: string;
+  general: string;
+  deep: string;
+}
 
 interface ThemeSettingsTabProps {
   theme: AppTheme;
   onThemeChange: (theme: AppTheme) => void;
+  modelSettings?: ModelSettingsValues | null;
+  availableModels?: string[];
+  ollamaConnected?: boolean;
+  loadingModels?: boolean;
+  savingModels?: boolean;
+  onModelSettingChange?: (profile: ModelProfileKey, modelName: string) => void;
+  onSaveModelSettings?: () => void | Promise<void>;
+  onRefreshModels?: () => void | Promise<void>;
 }
 
 const options: { id: AppTheme; title: string; description: string }[] = [
@@ -25,40 +43,168 @@ const options: { id: AppTheme; title: string; description: string }[] = [
   },
 ];
 
-const ThemeSettingsTab = ({ theme, onThemeChange }: ThemeSettingsTabProps) => {
+const ThemeSettingsTab = ({
+  theme,
+  onThemeChange,
+  modelSettings = null,
+  availableModels = [],
+  ollamaConnected = true,
+  loadingModels = false,
+  savingModels = false,
+  onModelSettingChange,
+  onSaveModelSettings,
+  onRefreshModels,
+}: ThemeSettingsTabProps) => {
+  const modelOptions = useMemo(() => {
+    const entries = new Set<string>(availableModels);
+    if (modelSettings) {
+      entries.add(modelSettings.lite);
+      entries.add(modelSettings.general);
+      entries.add(modelSettings.deep);
+    }
+    return Array.from(entries).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  }, [availableModels, modelSettings]);
+
+  const renderModelSelect = (profile: ModelProfileKey, label: string) => (
+    <div className="space-y-1.5">
+      <label htmlFor={`model-select-${profile}`} className="text-xs font-medium text-foreground">
+        {label}
+      </label>
+      <select
+        id={`model-select-${profile}`}
+        value={modelSettings?.[profile] ?? ""}
+        onChange={(event) => onModelSettingChange?.(profile, event.target.value)}
+        disabled={
+          loadingModels ||
+          savingModels ||
+          modelOptions.length === 0 ||
+          !modelSettings ||
+          !onModelSettingChange
+        }
+        className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {modelOptions.map((modelName) => (
+          <option key={`${profile}-${modelName}`} value={modelName}>
+            {modelName}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+
   return (
-    <div className="max-w-4xl mx-auto w-full px-6 py-6 space-y-5">
-      <div>
-        <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-          <Brush className="w-4 h-4" />
-          Appearance
-        </h2>
+    <div className="max-w-5xl mx-auto w-full px-4 md:px-6 py-3 md:py-4 space-y-4">
+      <div className="pb-1 border-b border-vesta-header-border">
+        <h2 className="text-lg font-semibold text-foreground">Settings</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Choose the app style. Changes apply to both main and mini chat windows.
+          Configure appearance and local Ollama model routing for this app.
         </p>
       </div>
 
-      <div role="radiogroup" aria-label="Appearance theme" className="grid gap-3 md:grid-cols-3">
-        {options.map((option) => {
-          const selected = theme === option.id;
-          return (
-            <button
-              key={option.id}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+        <section className="rounded-lg border border-vesta-header-border bg-card p-4 space-y-3">
+          <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
+            <Brush className="w-4 h-4" />
+            Appearance
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            Choose the app style. Changes apply to both main and mini chat windows.
+          </p>
+
+          <div
+            role="radiogroup"
+            aria-label="Appearance theme"
+            className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1"
+          >
+            {options.map((option) => {
+              const selected = theme === option.id;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => onThemeChange(option.id)}
+                  className={`rounded-md border px-4 py-3 text-left transition-colors ${
+                    selected
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border bg-card hover:bg-accent text-foreground"
+                  }`}
+                >
+                  <p className="text-sm font-semibold">{option.title}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {option.description}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-vesta-header-border bg-card p-4 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold text-foreground">Model Mapping</h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                Choose which Ollama models power Lite, General, and Deep routing.
+              </p>
+            </div>
+            <Button
               type="button"
-              role="radio"
-              aria-checked={selected}
-              onClick={() => onThemeChange(option.id)}
-              className={`rounded-md border px-4 py-3 text-left transition-colors ${
-                selected
-                  ? "border-primary bg-primary/10 text-foreground"
-                  : "border-border bg-card hover:bg-accent text-foreground"
-              }`}
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void onRefreshModels?.();
+              }}
+              disabled={loadingModels || savingModels || !onRefreshModels}
             >
-              <p className="text-sm font-semibold">{option.title}</p>
-              <p className="text-xs text-muted-foreground mt-1">{option.description}</p>
-            </button>
-          );
-        })}
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+              Refresh models
+            </Button>
+          </div>
+
+          {!ollamaConnected ? (
+            <p className="text-xs text-destructive">
+              Ollama model list is unavailable. Start Ollama and refresh models.
+            </p>
+          ) : null}
+
+          {loadingModels ? (
+            <p className="text-sm text-muted-foreground">Loading Ollama models...</p>
+          ) : (
+            <>
+              {modelOptions.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No Ollama models found. Pull models in Ollama, then refresh.
+                </p>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-3">
+                  {renderModelSelect("lite", "Lite model")}
+                  {renderModelSelect("general", "General model")}
+                  {renderModelSelect("deep", "Deep model")}
+                </div>
+              )}
+
+              <div>
+                <Button
+                  type="button"
+                  onClick={() => {
+                    void onSaveModelSettings?.();
+                  }}
+                  disabled={
+                    savingModels ||
+                    loadingModels ||
+                    modelOptions.length === 0 ||
+                    !modelSettings ||
+                    !onSaveModelSettings
+                  }
+                >
+                  {savingModels ? "Saving..." : "Save model mapping"}
+                </Button>
+              </div>
+            </>
+          )}
+        </section>
       </div>
     </div>
   );

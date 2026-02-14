@@ -14,6 +14,24 @@ beforeEach(() => {
     )
     .mockResolvedValueOnce(
       new Response(JSON.stringify({ conversations: [] }), { status: 200 }),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          configured_models: {
+            lite: "hymetalab/vesta-lite",
+            general: "hymetalab/vesta-general",
+            deep: "hymetalab/vesta-deep",
+          },
+          available_models: [
+            "hymetalab/vesta-lite",
+            "hymetalab/vesta-general",
+            "hymetalab/vesta-deep",
+          ],
+          ollama_connected: true,
+        }),
+        { status: 200 },
+      ),
     );
   vi.stubGlobal("fetch", fetchMock);
 });

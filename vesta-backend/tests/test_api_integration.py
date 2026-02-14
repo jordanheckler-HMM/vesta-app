@@ -509,3 +509,96 @@ def test_folder_color_create_update_and_validation():
 
         invalid = client.post("/folders", json={"name": "Invalid", "color": "neon"})
         assert invalid.status_code == 400
+
+
+def test_model_settings_are_persisted_and_used_for_chat(monkeypatch):
+    async def _fake_list_models():
+        return ["custom-lite", "custom-general", "custom-deep"]
+
+    captured = {}
+
+    async def _fake_stream(model_name, prompt, sources=None):
+        captured["model_name"] = model_name
+        yield f"data: {main.json.dumps({'metadata': {'sources': sources or []}})}\n\n"
+        yield f"data: {main.json.dumps({'content': 'ok', 'done': True})}\n\n"
+
+    class _Signals:
+        energy = 0.1
+        information = 0.1
+        connection = 0.1
+        noise_tolerance = 0.4
+
+    class _TaskContext:
+        is_continuation = False
+        is_new_task = True
+        depth = 0
+        requires_consistency = False
+        complexity_trend = "stable"
+        task_type = "general"
+
+    class _Decision:
+        model = "deep"
+        method = "heuristic"
+        reasoning = "test decision"
+        signals = _Signals()
+        task_context = _TaskContext()
+        confidence = 0.9
+        fallback_used = False
+
+    async def _fake_route_to_model(message, mode, history, last_model_used=None):
+        return _Decision()
+
+    monkeypatch.setattr(main, "fetch_ollama_model_names", _fake_list_models)
+    monkeypatch.setattr(main, "stream_ollama_response", _fake_stream)
+    monkeypatch.setattr(main, "route_to_model", _fake_route_to_model)
+    monkeypatch.setattr(
+        main,
+        "enforce_model_consistency",
+        lambda selected_model, history, last_model_used: (selected_model, False),
+    )
+
+    with TestClient(main.app) as client:
+        initial = client.get("/settings/models")
+        assert initial.status_code == 200
+        initial_body = initial.json()
+        assert initial_body["configured_models"]["lite"] == "hymetalab/vesta-lite"
+        assert set(initial_body["available_models"]) == {
+            "custom-lite",
+            "custom-general",
+            "custom-deep",
+        }
+
+        updated = client.put(
+            "/settings/models",
+            json={
+                "lite": "custom-lite",
+                "general": "custom-general",
+                "deep": "custom-deep",
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["configured_models"]["deep"] == "custom-deep"
+
+        manual = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "message": "manual model test",
+                "messages": [],
+                "model": "lite",
+            },
+        )
+        assert manual.status_code == 200
+        assert captured["model_name"] == "custom-lite"
+
+        auto = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "message": "auto model test",
+                "messages": [],
+                "model": "auto",
+            },
+        )
+        assert auto.status_code == 200
+        assert captured["model_name"] == "custom-deep"

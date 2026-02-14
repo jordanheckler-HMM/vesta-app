@@ -44,11 +44,12 @@ app.add_middleware(
 )
 
 # Model definitions
-MODEL_NAMES = {
+DEFAULT_MODEL_NAMES = {
     "general": "hymetalab/vesta-general",
     "deep": "hymetalab/vesta-deep",
     "lite": "hymetalab/vesta-lite",
 }
+MODEL_PROFILE_KEYS = ("lite", "general", "deep")
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 EMBEDDING_MODEL = "qwen3-embedding:0.6b"
@@ -106,6 +107,12 @@ class ConversationTurnRequest(BaseModel):
     assistant_message: str = Field(..., min_length=1)
     model_used: Optional[str] = None
     sources: Optional[List[Dict[str, Any]]] = None
+
+
+class ModelSettingsUpdateRequest(BaseModel):
+    lite: str = Field(..., min_length=1)
+    general: str = Field(..., min_length=1)
+    deep: str = Field(..., min_length=1)
 
 
 class KnowledgeStore:
@@ -218,6 +225,12 @@ class KnowledgeStore:
 
                     CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_id
                         ON conversation_messages(conversation_id, created_at);
+
+                    CREATE TABLE IF NOT EXISTS app_settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
                     """
                 )
                 columns = {
@@ -239,10 +252,67 @@ class KnowledgeStore:
                     """,
                     (DEFAULT_FOLDER_COLOR,),
                 )
+                now = self._current_ts()
+                for profile_key in MODEL_PROFILE_KEYS:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        (profile_key, DEFAULT_MODEL_NAMES[profile_key], now),
+                    )
                 conn.commit()
 
     def _current_ts(self) -> str:
         return str(int(time.time()))
+
+    def get_model_names(self) -> Dict[str, str]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT key, value
+                    FROM app_settings
+                    WHERE key IN (?, ?, ?)
+                    """,
+                    MODEL_PROFILE_KEYS,
+                ).fetchall()
+
+                configured = dict(DEFAULT_MODEL_NAMES)
+                for row in rows:
+                    key = str(row["key"])
+                    value = str(row["value"]).strip()
+                    if key in MODEL_PROFILE_KEYS and value:
+                        configured[key] = value
+
+                return configured
+
+    def set_model_names(self, *, lite: str, general: str, deep: str) -> Dict[str, str]:
+        now = self._current_ts()
+        next_config = {
+            "lite": lite.strip(),
+            "general": general.strip(),
+            "deep": deep.strip(),
+        }
+
+        with self._lock:
+            with self._connect() as conn:
+                conn.executemany(
+                    """
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    [
+                        (profile_key, next_config[profile_key], now)
+                        for profile_key in MODEL_PROFILE_KEYS
+                    ],
+                )
+                conn.commit()
+
+        return next_config
 
     def get_document_by_hash(self, content_hash: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -1059,6 +1129,28 @@ async def embed_texts(inputs: List[str], model_name: str = EMBEDDING_MODEL) -> L
     return embeddings
 
 
+async def fetch_ollama_model_names() -> List[str]:
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Ollama tags request failed with status {response.status_code}")
+
+    payload = response.json()
+    models = payload.get("models")
+    if not isinstance(models, list):
+        raise RuntimeError("Invalid Ollama tags response")
+
+    names: List[str] = []
+    for model in models:
+        if isinstance(model, dict):
+            name = str(model.get("name", "")).strip()
+            if name:
+                names.append(name)
+
+    return sorted(set(names))
+
+
 async def embed_in_batches(chunks: List[str], batch_size: int = 24) -> List[List[float]]:
     vectors: List[List[float]] = []
     for start in range(0, len(chunks), batch_size):
@@ -1364,12 +1456,17 @@ async def llm_route(
     LLM-based routing for ambiguous cases.
     Enhanced with coherence framework signals.
     """
+    configured_models = get_knowledge_store().get_model_names()
+    lite_model_name = configured_models["lite"]
+    general_model_name = configured_models["general"]
+    deep_model_name = configured_models["deep"]
+
     routing_prompt = f"""Analyze this user query and determine which AI model should handle it.
 
-Available models:
-- hymetalab/vesta-lite: For simple, straightforward questions, quick clarifications, basic information retrieval
-- hymetalab/vesta-general: For standard tasks, moderate complexity, general conversation, typical problem-solving
-- hymetalab/vesta-deep: For complex reasoning, deep analysis, nuanced thinking, difficult problems requiring extensive reasoning
+Available model profiles:
+- lite ({lite_model_name}): For simple, straightforward questions, quick clarifications, basic information retrieval
+- general ({general_model_name}): For standard tasks, moderate complexity, general conversation, typical problem-solving
+- deep ({deep_model_name}): For complex reasoning, deep analysis, nuanced thinking, difficult problems requiring extensive reasoning
 
 User's selected mode: {mode}
 Message context: {len(history)} previous messages
@@ -1395,7 +1492,7 @@ Consider all factors and respond with ONLY a JSON object:
         response = await client.post(
             f"{OLLAMA_BASE_URL}/api/generate",
             json={
-                "model": "hymetalab/vesta-general",
+                "model": general_model_name,
                 "prompt": routing_prompt,
                 "temperature": 0.3,
                 "stream": False,
@@ -1546,7 +1643,11 @@ async def chat(request: ChatRequest):
         else:
             selected_model_key = request.model if request.model != "auto" else "general"
 
-        model_name = MODEL_NAMES.get(selected_model_key, "hymetalab/vesta-general")
+        configured_model_names = get_knowledge_store().get_model_names()
+        model_name = configured_model_names.get(
+            selected_model_key,
+            configured_model_names["general"],
+        )
 
         if routing_decision:
             latency_ms = (time.time() - start_time) * 1000
@@ -2071,6 +2172,81 @@ async def append_conversation_turn(conversation_id: str, request: ConversationTu
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     return {"saved": True, "conversation": conversation}
+
+
+@app.get("/settings/models")
+async def get_model_settings():
+    store = get_knowledge_store()
+    configured_models = store.get_model_names()
+
+    try:
+        available_models = await fetch_ollama_model_names()
+        ollama_connected = True
+    except Exception as error:
+        print(
+            f"Model list warning: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        available_models = []
+        ollama_connected = False
+
+    return {
+        "configured_models": configured_models,
+        "available_models": available_models,
+        "ollama_connected": ollama_connected,
+    }
+
+
+@app.put("/settings/models")
+async def update_model_settings(request: ModelSettingsUpdateRequest):
+    next_config = {
+        "lite": request.lite.strip(),
+        "general": request.general.strip(),
+        "deep": request.deep.strip(),
+    }
+    for profile_key in MODEL_PROFILE_KEYS:
+        if not next_config[profile_key]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{profile_key} model is required",
+            )
+
+    available_models: List[str] = []
+    ollama_connected = True
+    try:
+        available_models = await fetch_ollama_model_names()
+    except Exception as error:
+        print(
+            f"Model validation warning: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        ollama_connected = False
+
+    if available_models:
+        available_set = set(available_models)
+        invalid_keys = [
+            profile_key
+            for profile_key in MODEL_PROFILE_KEYS
+            if next_config[profile_key] not in available_set
+        ]
+        if invalid_keys:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Selected model not found in Ollama for: {', '.join(invalid_keys)}",
+            )
+
+    store = get_knowledge_store()
+    configured = store.set_model_names(
+        lite=next_config["lite"],
+        general=next_config["general"],
+        deep=next_config["deep"],
+    )
+
+    return {
+        "configured_models": configured,
+        "available_models": available_models,
+        "ollama_connected": ollama_connected,
+    }
 
 
 @app.get("/health")
