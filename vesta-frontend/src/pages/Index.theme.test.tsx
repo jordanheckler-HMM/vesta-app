@@ -18,6 +18,27 @@ beforeEach(() => {
     .mockResolvedValueOnce(
       new Response(
         JSON.stringify({
+          ollama_installed: true,
+          ollama_running: true,
+          required_models: [
+            "hymetalab/vesta-lite",
+            "hymetalab/vesta-general",
+            "hymetalab/vesta-deep",
+          ],
+          available_models: [
+            "hymetalab/vesta-lite",
+            "hymetalab/vesta-general",
+            "hymetalab/vesta-deep",
+          ],
+          missing_models: [],
+          ready: true,
+        }),
+        { status: 200 },
+      ),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
           configured_models: {
             lite: "hymetalab/vesta-lite",
             general: "hymetalab/vesta-general",

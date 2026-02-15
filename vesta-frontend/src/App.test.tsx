@@ -26,7 +26,27 @@ describe("App", () => {
         dispatchEvent: vi.fn(),
       })),
     });
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ollama_installed: true,
+          ollama_running: true,
+          required_models: [
+            "hymetalab/vesta-lite",
+            "hymetalab/vesta-general",
+            "hymetalab/vesta-deep",
+          ],
+          available_models: [
+            "hymetalab/vesta-lite",
+            "hymetalab/vesta-general",
+            "hymetalab/vesta-deep",
+          ],
+          missing_models: [],
+          ready: true,
+        }),
+        { status: 200 },
+      ),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
@@ -36,6 +56,6 @@ describe("App", () => {
     expect(
       screen.getByRole("radiogroup", { name: /model selection/i }),
     ).toBeInTheDocument();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8090/setup/prerequisites");
   });
 });

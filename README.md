@@ -29,6 +29,8 @@ ollama pull hymetalab/vesta-deep
 ollama pull qwen3-embedding:0.6b
 ```
 
+The first-run setup flow auto-downloads these same models if they are missing and skips models that already exist locally.
+
 ## Install dependencies
 
 ```bash

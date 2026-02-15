@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile
+import asyncio
+from fastapi import FastAPI, HTTPException, File, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -10,11 +11,13 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Tuple
 from uuid import uuid4
 
 # Import routing utilities and audit logger
@@ -50,9 +53,15 @@ DEFAULT_MODEL_NAMES = {
     "lite": "hymetalab/vesta-lite",
 }
 MODEL_PROFILE_KEYS = ("lite", "general", "deep")
+EMBEDDING_MODEL = "qwen3-embedding:0.6b"
+REQUIRED_VESTA_MODELS = [
+    DEFAULT_MODEL_NAMES["lite"],
+    DEFAULT_MODEL_NAMES["general"],
+    DEFAULT_MODEL_NAMES["deep"],
+    EMBEDDING_MODEL,
+]
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-EMBEDDING_MODEL = "qwen3-embedding:0.6b"
 MAX_CHAT_UPLOAD_SIZE = 10 * 1024 * 1024
 MAX_KNOWLEDGE_UPLOAD_SIZE = 25 * 1024 * 1024
 MAX_KNOWLEDGE_TEXT_CHARS = 300_000
@@ -113,6 +122,11 @@ class ModelSettingsUpdateRequest(BaseModel):
     lite: str = Field(..., min_length=1)
     general: str = Field(..., min_length=1)
     deep: str = Field(..., min_length=1)
+
+
+class SetupPrerequisitesRequest(BaseModel):
+    approved: bool = False
+    models: Optional[List[str]] = None
 
 
 class KnowledgeStore:
@@ -231,6 +245,35 @@ class KnowledgeStore:
                         value TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     );
+
+                    CREATE TABLE IF NOT EXISTS setup_runs (
+                        id TEXT PRIMARY KEY,
+                        requested_models_json TEXT NOT NULL,
+                        started_at TEXT NOT NULL,
+                        finished_at TEXT,
+                        success INTEGER NOT NULL DEFAULT 0,
+                        installed_ollama INTEGER NOT NULL DEFAULT 0,
+                        started_ollama INTEGER NOT NULL DEFAULT 0,
+                        pulled_models_json TEXT NOT NULL DEFAULT '[]',
+                        failed_models_json TEXT NOT NULL DEFAULT '[]'
+                    );
+
+                    CREATE TABLE IF NOT EXISTS setup_run_events (
+                        id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        message TEXT,
+                        model_name TEXT,
+                        payload_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY (run_id) REFERENCES setup_runs(id) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_setup_run_events_run_id
+                        ON setup_run_events(run_id, created_at);
+
+                    CREATE INDEX IF NOT EXISTS idx_setup_runs_started_at
+                        ON setup_runs(started_at DESC);
                     """
                 )
                 columns = {
@@ -313,6 +356,161 @@ class KnowledgeStore:
                 conn.commit()
 
         return next_config
+
+    def create_setup_run(self, requested_models: Optional[List[str]]) -> str:
+        run_id = str(uuid4())
+        now = self._current_ts()
+        payload = [model.strip() for model in (requested_models or []) if model.strip()]
+
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO setup_runs (
+                        id,
+                        requested_models_json,
+                        started_at,
+                        success,
+                        installed_ollama,
+                        started_ollama,
+                        pulled_models_json,
+                        failed_models_json
+                    ) VALUES (?, ?, ?, 0, 0, 0, '[]', '[]')
+                    """,
+                    (run_id, json.dumps(payload), now),
+                )
+                conn.commit()
+
+        return run_id
+
+    def append_setup_run_event(
+        self,
+        run_id: str,
+        event_type: str,
+        *,
+        message: Optional[str] = None,
+        model_name: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        now = self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO setup_run_events (
+                        id, run_id, event_type, message, model_name, payload_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()),
+                        run_id,
+                        event_type,
+                        message,
+                        model_name,
+                        json.dumps(payload or {}),
+                        now,
+                    ),
+                )
+                conn.commit()
+
+    def finish_setup_run(
+        self,
+        run_id: str,
+        *,
+        success: bool,
+        installed_ollama: bool,
+        started_ollama: bool,
+        pulled_models: List[str],
+        failed_models: List[Dict[str, str]],
+    ) -> None:
+        now = self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE setup_runs
+                    SET
+                        finished_at = ?,
+                        success = ?,
+                        installed_ollama = ?,
+                        started_ollama = ?,
+                        pulled_models_json = ?,
+                        failed_models_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        now,
+                        1 if success else 0,
+                        1 if installed_ollama else 0,
+                        1 if started_ollama else 0,
+                        json.dumps(pulled_models),
+                        json.dumps(failed_models),
+                        run_id,
+                    ),
+                )
+                conn.commit()
+
+    def list_setup_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
+        safe_limit = max(1, min(limit, 200))
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        id,
+                        requested_models_json,
+                        started_at,
+                        finished_at,
+                        success,
+                        installed_ollama,
+                        started_ollama,
+                        pulled_models_json,
+                        failed_models_json
+                    FROM setup_runs
+                    ORDER BY started_at DESC
+                    LIMIT ?
+                    """,
+                    (safe_limit,),
+                ).fetchall()
+
+                runs: List[Dict[str, Any]] = []
+                for row in rows:
+                    run_data = dict(row)
+                    run_id = str(run_data["id"])
+                    run_data["requested_models"] = json.loads(
+                        str(run_data.pop("requested_models_json") or "[]")
+                    )
+                    run_data["pulled_models"] = json.loads(
+                        str(run_data.pop("pulled_models_json") or "[]")
+                    )
+                    run_data["failed_models"] = json.loads(
+                        str(run_data.pop("failed_models_json") or "[]")
+                    )
+                    run_data["success"] = bool(run_data["success"])
+                    run_data["installed_ollama"] = bool(run_data["installed_ollama"])
+                    run_data["started_ollama"] = bool(run_data["started_ollama"])
+
+                    event_rows = conn.execute(
+                        """
+                        SELECT event_type, message, model_name, payload_json, created_at
+                        FROM setup_run_events
+                        WHERE run_id = ?
+                        ORDER BY created_at ASC
+                        """,
+                        (run_id,),
+                    ).fetchall()
+                    events: List[Dict[str, Any]] = []
+                    for event_row in event_rows:
+                        event_data = dict(event_row)
+                        event_data["payload"] = json.loads(
+                            str(event_data.pop("payload_json") or "{}")
+                        )
+                        events.append(event_data)
+
+                    run_data["events"] = events
+                    runs.append(run_data)
+
+                return runs
 
     def get_document_by_hash(self, content_hash: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -1149,6 +1347,218 @@ async def fetch_ollama_model_names() -> List[str]:
                 names.append(name)
 
     return sorted(set(names))
+
+
+def is_ollama_installed() -> bool:
+    if shutil.which("ollama"):
+        return True
+
+    if sys.platform == "darwin":
+        app_candidates = [
+            Path("/Applications/Ollama.app"),
+            Path.home() / "Applications" / "Ollama.app",
+        ]
+        return any(path.exists() for path in app_candidates)
+
+    return False
+
+
+async def is_ollama_running() -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(f"{OLLAMA_BASE_URL}/api/version")
+        return response.status_code == 200
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError):
+        return False
+
+
+async def install_ollama_macos() -> Tuple[bool, str]:
+    if sys.platform != "darwin":
+        return False, "Automatic Ollama install is only supported on macOS."
+
+    brew_bin = shutil.which("brew")
+    if not brew_bin:
+        return (
+            False,
+            "Homebrew is required for automatic Ollama install. Install Homebrew and try again.",
+        )
+
+    def _run_install() -> Tuple[bool, str]:
+        try:
+            result = subprocess.run(
+                [brew_bin, "install", "--cask", "ollama"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except Exception as error:
+            return False, f"Failed to run Homebrew install: {type(error).__name__}: {error}"
+
+        if result.returncode != 0:
+            output = (result.stderr or result.stdout or "").strip()
+            if output:
+                output = output.splitlines()[-1].strip()
+            else:
+                output = f"exit code {result.returncode}"
+            return False, f"Homebrew could not install Ollama: {output}"
+
+        return True, ""
+
+    return await asyncio.to_thread(_run_install)
+
+
+def try_start_ollama() -> bool:
+    try:
+        if sys.platform == "darwin":
+            open_result = subprocess.run(
+                ["open", "-a", "Ollama"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if open_result.returncode == 0:
+                return True
+    except Exception as error:
+        print(f"Ollama app start warning: {type(error).__name__}: {error}", file=sys.stderr)
+
+    ollama_bin = shutil.which("ollama")
+    if not ollama_bin:
+        return False
+
+    try:
+        subprocess.Popen(
+            [ollama_bin, "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception as error:
+        print(f"Ollama serve start warning: {type(error).__name__}: {error}", file=sys.stderr)
+        return False
+
+
+async def wait_for_ollama_ready(max_wait_seconds: int = 25) -> bool:
+    for _ in range(max_wait_seconds):
+        if await is_ollama_running():
+            return True
+        await asyncio.sleep(1)
+    return False
+
+
+async def pull_ollama_model(model_name: str) -> None:
+    async with httpx.AsyncClient(timeout=1800.0) as client:
+        response = await client.post(
+            f"{OLLAMA_BASE_URL}/api/pull",
+            json={"name": model_name, "stream": False},
+        )
+
+    if response.status_code != 200:
+        detail = ""
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                detail = str(payload.get("error", "")).strip()
+        except ValueError:
+            detail = response.text.strip()
+
+        if not detail:
+            detail = f"status {response.status_code}"
+
+        raise RuntimeError(f"Failed to pull model '{model_name}': {detail}")
+
+
+async def stream_pull_ollama_model_progress(
+    model_name: str,
+) -> AsyncGenerator[Dict[str, Any], None]:
+    async with httpx.AsyncClient(timeout=1800.0) as client:
+        async with client.stream(
+            "POST",
+            f"{OLLAMA_BASE_URL}/api/pull",
+            json={"name": model_name, "stream": True},
+        ) as response:
+            if response.status_code != 200:
+                detail = ""
+                try:
+                    payload = response.json()
+                    if isinstance(payload, dict):
+                        detail = str(payload.get("error", "")).strip()
+                except Exception:
+                    detail = ""
+                if not detail:
+                    detail = f"status {response.status_code}"
+                raise RuntimeError(f"Failed to pull model '{model_name}': {detail}")
+
+            async for line in response.aiter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if not isinstance(data, dict):
+                    continue
+
+                if data.get("error"):
+                    raise RuntimeError(
+                        f"Failed to pull model '{model_name}': {data['error']}"
+                    )
+
+                yield {
+                    "status": str(data.get("status", "")).strip(),
+                    "completed": data.get("completed"),
+                    "total": data.get("total"),
+                }
+
+
+async def build_setup_prerequisites_status() -> Dict[str, Any]:
+    installed = is_ollama_installed()
+    running = await is_ollama_running() if installed else False
+
+    available_models: List[str] = []
+    if running:
+        try:
+            available_models = await fetch_ollama_model_names()
+        except Exception as error:
+            print(
+                f"Model list warning during setup status: {type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
+
+    available_set = set(available_models)
+    missing_models = [
+        model_name
+        for model_name in REQUIRED_VESTA_MODELS
+        if model_name not in available_set
+    ]
+
+    return {
+        "ollama_installed": installed,
+        "ollama_running": running,
+        "required_models": REQUIRED_VESTA_MODELS,
+        "available_models": available_models,
+        "missing_models": missing_models,
+        "ready": installed and running and not missing_models,
+    }
+
+
+def resolve_target_models(
+    status: Dict[str, Any], requested_models: Optional[List[str]]
+) -> List[str]:
+    available_set = set(status.get("available_models", []))
+    if not requested_models:
+        return list(status.get("missing_models", []))
+
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for raw_model in requested_models:
+        model_name = raw_model.strip()
+        if not model_name or model_name in seen:
+            continue
+        seen.add(model_name)
+        normalized.append(model_name)
+
+    return [model_name for model_name in normalized if model_name not in available_set]
 
 
 async def embed_in_batches(chunks: List[str], batch_size: int = 24) -> List[List[float]]:
@@ -2172,6 +2582,275 @@ async def append_conversation_turn(conversation_id: str, request: ConversationTu
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     return {"saved": True, "conversation": conversation}
+
+
+@app.get("/setup/prerequisites")
+async def get_setup_prerequisites():
+    return await build_setup_prerequisites_status()
+
+
+@app.post("/setup/prerequisites")
+async def run_setup_prerequisites(request: SetupPrerequisitesRequest):
+    if not request.approved:
+        raise HTTPException(
+            status_code=400,
+            detail="User approval is required before running setup.",
+        )
+
+    store = get_knowledge_store()
+    run_id = store.create_setup_run(request.models)
+
+    def log_event(
+        event_type: str,
+        *,
+        message: Optional[str] = None,
+        model_name: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        store.append_setup_run_event(
+            run_id,
+            event_type,
+            message=message,
+            model_name=model_name,
+            payload=payload,
+        )
+
+    installed_ollama = False
+    started_ollama = False
+    pulled_models: List[str] = []
+    failed_models: List[Dict[str, str]] = []
+
+    try:
+        log_event("setup_start", payload={"requested_models": request.models or []})
+
+        status = await build_setup_prerequisites_status()
+        log_event("status", payload=status)
+
+        if not status["ollama_installed"]:
+            log_event("install_start")
+            install_success, install_message = await install_ollama_macos()
+            if not install_success:
+                raise RuntimeError(install_message)
+            installed_ollama = True
+            log_event("install_done")
+            status = await build_setup_prerequisites_status()
+            log_event("status", payload=status)
+            if not status["ollama_installed"]:
+                raise RuntimeError(
+                    "Ollama installation completed but Ollama is still not detected."
+                )
+
+        if not status["ollama_running"]:
+            log_event("start_ollama")
+            started_ollama = try_start_ollama()
+            if not started_ollama:
+                raise RuntimeError(
+                    "Could not start Ollama automatically. Start Ollama and try again."
+                )
+            if not await wait_for_ollama_ready():
+                raise RuntimeError("Ollama was started but did not become ready in time.")
+            log_event("start_ollama_done")
+            status = await build_setup_prerequisites_status()
+            log_event("status", payload=status)
+
+        target_models = resolve_target_models(status, request.models)
+        log_event("target_models", payload={"target_models": target_models})
+
+        for model_name in target_models:
+            log_event("pull_start", model_name=model_name)
+            try:
+                await pull_ollama_model(model_name)
+                pulled_models.append(model_name)
+                log_event("pull_done", model_name=model_name)
+            except Exception as error:
+                failure_message = str(error)
+                failed_models.append({"model": model_name, "error": failure_message})
+                log_event("pull_error", model_name=model_name, message=failure_message)
+
+        final_status = await build_setup_prerequisites_status()
+        ready = final_status["ready"] and not failed_models
+        log_event("complete", payload={"ready": ready, "status": final_status})
+        store.finish_setup_run(
+            run_id,
+            success=ready,
+            installed_ollama=installed_ollama,
+            started_ollama=started_ollama,
+            pulled_models=pulled_models,
+            failed_models=failed_models,
+        )
+        return {
+            "run_id": run_id,
+            "approved": True,
+            "installed_ollama": installed_ollama,
+            "started_ollama": started_ollama,
+            "pulled_models": pulled_models,
+            "failed_models": failed_models,
+            "status": final_status,
+            "ready": ready,
+        }
+    except Exception as error:
+        log_event("error", message=str(error))
+        store.finish_setup_run(
+            run_id,
+            success=False,
+            installed_ollama=installed_ollama,
+            started_ollama=started_ollama,
+            pulled_models=pulled_models,
+            failed_models=failed_models,
+        )
+        raise HTTPException(status_code=503, detail=str(error))
+
+
+@app.post("/setup/prerequisites/stream")
+async def run_setup_prerequisites_stream(request: SetupPrerequisitesRequest):
+    if not request.approved:
+        raise HTTPException(
+            status_code=400,
+            detail="User approval is required before running setup.",
+        )
+
+    store = get_knowledge_store()
+    run_id = store.create_setup_run(request.models)
+
+    async def _event_stream():
+        def _sse(payload: Dict[str, Any]) -> str:
+            return f"data: {json.dumps(payload)}\n\n"
+
+        installed_ollama = False
+        started_ollama = False
+        pulled_models: List[str] = []
+        failed_models: List[Dict[str, str]] = []
+        finished = False
+
+        def emit(
+            event_type: str,
+            *,
+            message: Optional[str] = None,
+            model_name: Optional[str] = None,
+            payload: Optional[Dict[str, Any]] = None,
+        ) -> str:
+            merged_payload: Dict[str, Any] = {"type": event_type, "run_id": run_id}
+            if payload:
+                merged_payload.update(payload)
+
+            store.append_setup_run_event(
+                run_id,
+                event_type,
+                message=message,
+                model_name=model_name,
+                payload=payload,
+            )
+            return _sse(merged_payload)
+
+        try:
+            yield emit("setup_start", payload={"requested_models": request.models or []})
+
+            status = await build_setup_prerequisites_status()
+            yield emit("status", payload={"status": status})
+
+            if not status["ollama_installed"]:
+                yield emit("install_start", payload={"platform": sys.platform})
+                install_success, install_message = await install_ollama_macos()
+                if not install_success:
+                    raise RuntimeError(install_message)
+                installed_ollama = True
+                yield emit("install_done")
+                status = await build_setup_prerequisites_status()
+                yield emit("status", payload={"status": status})
+                if not status["ollama_installed"]:
+                    raise RuntimeError(
+                        "Ollama installation completed but Ollama is still not detected."
+                    )
+
+            if not status["ollama_running"]:
+                yield emit("start_ollama")
+                started_ollama = try_start_ollama()
+                if not started_ollama:
+                    raise RuntimeError(
+                        "Could not start Ollama automatically. Start Ollama and try again."
+                    )
+                if not await wait_for_ollama_ready():
+                    raise RuntimeError(
+                        "Ollama was started but did not become ready in time."
+                    )
+                yield emit("start_ollama_done")
+                status = await build_setup_prerequisites_status()
+                yield emit("status", payload={"status": status})
+
+            target_models = resolve_target_models(status, request.models)
+            yield emit("target_models", payload={"target_models": target_models})
+
+            for model_name in target_models:
+                yield emit("pull_start", model_name=model_name, payload={"model": model_name})
+                try:
+                    async for progress in stream_pull_ollama_model_progress(model_name):
+                        yield emit(
+                            "pull_progress",
+                            model_name=model_name,
+                            payload={
+                                "model": model_name,
+                                "status": progress.get("status"),
+                                "completed": progress.get("completed"),
+                                "total": progress.get("total"),
+                            },
+                        )
+                    pulled_models.append(model_name)
+                    yield emit("pull_done", model_name=model_name, payload={"model": model_name})
+                except Exception as error:
+                    failure_message = str(error)
+                    failed_models.append({"model": model_name, "error": failure_message})
+                    yield emit(
+                        "pull_error",
+                        model_name=model_name,
+                        message=failure_message,
+                        payload={
+                            "model": model_name,
+                            "error": failure_message,
+                        },
+                    )
+
+            final_status = await build_setup_prerequisites_status()
+            ready = final_status["ready"] and not failed_models
+            store.finish_setup_run(
+                run_id,
+                success=ready,
+                installed_ollama=installed_ollama,
+                started_ollama=started_ollama,
+                pulled_models=pulled_models,
+                failed_models=failed_models,
+            )
+            finished = True
+            yield emit(
+                "complete",
+                payload={
+                    "approved": True,
+                    "installed_ollama": installed_ollama,
+                    "started_ollama": started_ollama,
+                    "pulled_models": pulled_models,
+                    "failed_models": failed_models,
+                    "status": final_status,
+                    "ready": ready,
+                },
+            )
+        except Exception as error:
+            if not finished:
+                store.finish_setup_run(
+                    run_id,
+                    success=False,
+                    installed_ollama=installed_ollama,
+                    started_ollama=started_ollama,
+                    pulled_models=pulled_models,
+                    failed_models=failed_models,
+                )
+            yield emit("error", message=str(error), payload={"message": str(error)})
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream")
+
+
+@app.get("/setup/history")
+async def get_setup_history(limit: int = Query(default=20, ge=1, le=200)):
+    store = get_knowledge_store()
+    return {"runs": store.list_setup_runs(limit)}
 
 
 @app.get("/settings/models")

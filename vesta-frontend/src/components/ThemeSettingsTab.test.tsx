@@ -45,4 +45,32 @@ describe("ThemeSettingsTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /save model mapping/i }));
     expect(onSaveModelSettings).toHaveBeenCalled();
   });
+
+  it("triggers approved setup action from settings", () => {
+    const onRunPrerequisiteSetup = vi.fn();
+
+    render(
+      <ThemeSettingsTab
+        theme="light"
+        onThemeChange={vi.fn()}
+        setupStatus={{
+          ollama_installed: true,
+          ollama_running: false,
+          required_models: [
+            "hymetalab/vesta-lite",
+            "hymetalab/vesta-general",
+            "hymetalab/vesta-deep",
+          ],
+          available_models: ["hymetalab/vesta-lite"],
+          missing_models: ["hymetalab/vesta-general", "hymetalab/vesta-deep"],
+          ready: false,
+        }}
+        onRunPrerequisiteSetup={onRunPrerequisiteSetup}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /approve and set up/i }));
+    expect(onRunPrerequisiteSetup).toHaveBeenCalled();
+    expect(screen.getByText(/missing models:/i)).toBeInTheDocument();
+  });
 });

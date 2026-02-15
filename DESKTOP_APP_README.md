@@ -70,3 +70,5 @@ ollama pull hymetalab/vesta-lite
 ollama pull hymetalab/vesta-deep
 ollama pull qwen3-embedding:0.6b
 ```
+
+The first-run setup flow in the app auto-downloads any missing model from this list and skips models that are already installed.

@@ -77,6 +77,350 @@ def test_health_endpoint_reports_degraded_when_ollama_is_unreachable(monkeypatch
     assert body["ollama"] == "unreachable"
 
 
+def test_setup_prerequisites_status_reports_missing_models(monkeypatch):
+    async def _fake_status():
+        return {
+            "ollama_installed": True,
+            "ollama_running": True,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": [main.REQUIRED_VESTA_MODELS[0]],
+            "missing_models": main.REQUIRED_VESTA_MODELS[1:],
+            "ready": False,
+        }
+
+    monkeypatch.setattr(main, "build_setup_prerequisites_status", _fake_status)
+
+    with TestClient(main.app) as client:
+        response = client.get("/setup/prerequisites")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ollama_installed"] is True
+    assert body["missing_models"] == main.REQUIRED_VESTA_MODELS[1:]
+    assert body["ready"] is False
+
+
+def test_setup_prerequisites_status_includes_embedding_model(monkeypatch):
+    async def _fake_running():
+        return True
+
+    async def _fake_fetch_ollama_model_names():
+        return [
+            main.DEFAULT_MODEL_NAMES["lite"],
+            main.DEFAULT_MODEL_NAMES["general"],
+            main.DEFAULT_MODEL_NAMES["deep"],
+        ]
+
+    monkeypatch.setattr(main, "is_ollama_installed", lambda: True)
+    monkeypatch.setattr(main, "is_ollama_running", _fake_running)
+    monkeypatch.setattr(main, "fetch_ollama_model_names", _fake_fetch_ollama_model_names)
+
+    with TestClient(main.app) as client:
+        response = client.get("/setup/prerequisites")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert main.EMBEDDING_MODEL in body["required_models"]
+    assert main.EMBEDDING_MODEL in body["missing_models"]
+    assert body["ready"] is False
+
+
+def test_setup_prerequisites_requires_approval():
+    with TestClient(main.app) as client:
+        response = client.post("/setup/prerequisites", json={"approved": False})
+
+    assert response.status_code == 400
+    assert "approval" in response.json()["detail"].lower()
+
+
+def test_setup_prerequisites_reports_ollama_not_installed(monkeypatch):
+    async def _fake_status():
+        return {
+            "ollama_installed": False,
+            "ollama_running": False,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": [],
+            "missing_models": main.REQUIRED_VESTA_MODELS,
+            "ready": False,
+        }
+
+    async def _fake_install_ollama_macos():
+        return False, "Homebrew is required for automatic Ollama install. Install Homebrew and try again."
+
+    monkeypatch.setattr(main, "build_setup_prerequisites_status", _fake_status)
+    monkeypatch.setattr(main, "install_ollama_macos", _fake_install_ollama_macos)
+
+    with TestClient(main.app) as client:
+        response = client.post("/setup/prerequisites", json={"approved": True})
+
+    assert response.status_code == 503
+    assert "homebrew" in response.json()["detail"].lower()
+
+
+def test_setup_prerequisites_installs_ollama_on_macos_when_missing(monkeypatch):
+    status_sequence = [
+        {
+            "ollama_installed": False,
+            "ollama_running": False,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": [],
+            "missing_models": main.REQUIRED_VESTA_MODELS,
+            "ready": False,
+        },
+        {
+            "ollama_installed": True,
+            "ollama_running": True,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": main.REQUIRED_VESTA_MODELS,
+            "missing_models": [],
+            "ready": True,
+        },
+    ]
+    call_index = {"value": 0}
+    install_called = {"value": False}
+
+    async def _fake_status():
+        index = min(call_index["value"], len(status_sequence) - 1)
+        call_index["value"] += 1
+        return status_sequence[index]
+
+    async def _fake_install_ollama_macos():
+        install_called["value"] = True
+        return True, ""
+
+    monkeypatch.setattr(main, "build_setup_prerequisites_status", _fake_status)
+    monkeypatch.setattr(main, "install_ollama_macos", _fake_install_ollama_macos)
+
+    with TestClient(main.app) as client:
+        response = client.post("/setup/prerequisites", json={"approved": True})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert install_called["value"] is True
+    assert body["installed_ollama"] is True
+    assert body["ready"] is True
+
+
+def test_setup_prerequisites_pulls_missing_models_when_approved(monkeypatch):
+    status_sequence = [
+        {
+            "ollama_installed": True,
+            "ollama_running": False,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": [],
+            "missing_models": main.REQUIRED_VESTA_MODELS,
+            "ready": False,
+        },
+        {
+            "ollama_installed": True,
+            "ollama_running": True,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": [main.REQUIRED_VESTA_MODELS[0]],
+            "missing_models": main.REQUIRED_VESTA_MODELS[1:],
+            "ready": False,
+        },
+        {
+            "ollama_installed": True,
+            "ollama_running": True,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": main.REQUIRED_VESTA_MODELS,
+            "missing_models": [],
+            "ready": True,
+        },
+    ]
+    call_index = {"value": 0}
+    pulled_models = []
+
+    async def _fake_status():
+        index = min(call_index["value"], len(status_sequence) - 1)
+        call_index["value"] += 1
+        return status_sequence[index]
+
+    async def _fake_wait_for_ollama_ready():
+        return True
+
+    async def _fake_pull_ollama_model(model_name):
+        pulled_models.append(model_name)
+
+    monkeypatch.setattr(main, "build_setup_prerequisites_status", _fake_status)
+    monkeypatch.setattr(main, "try_start_ollama", lambda: True)
+    monkeypatch.setattr(main, "wait_for_ollama_ready", _fake_wait_for_ollama_ready)
+    monkeypatch.setattr(main, "pull_ollama_model", _fake_pull_ollama_model)
+
+    with TestClient(main.app) as client:
+        response = client.post("/setup/prerequisites", json={"approved": True})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["installed_ollama"] is False
+    assert body["started_ollama"] is True
+    assert body["ready"] is True
+    assert body["failed_models"] == []
+    assert body["pulled_models"] == main.REQUIRED_VESTA_MODELS[1:]
+    assert pulled_models == main.REQUIRED_VESTA_MODELS[1:]
+
+
+def test_setup_prerequisites_stream_emits_per_model_progress(monkeypatch):
+    model_name = main.REQUIRED_VESTA_MODELS[0]
+    status_sequence = [
+        {
+            "ollama_installed": True,
+            "ollama_running": False,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": [],
+            "missing_models": [model_name],
+            "ready": False,
+        },
+        {
+            "ollama_installed": True,
+            "ollama_running": True,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": [],
+            "missing_models": [model_name],
+            "ready": False,
+        },
+        {
+            "ollama_installed": True,
+            "ollama_running": True,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": [model_name],
+            "missing_models": [],
+            "ready": True,
+        },
+    ]
+    call_index = {"value": 0}
+
+    async def _fake_status():
+        index = min(call_index["value"], len(status_sequence) - 1)
+        call_index["value"] += 1
+        return status_sequence[index]
+
+    async def _fake_wait_for_ollama_ready():
+        return True
+
+    async def _fake_stream_pull_ollama_model_progress(_model_name):
+        yield {"status": "pulling manifest", "completed": 0, "total": 100}
+        yield {"status": "downloading", "completed": 50, "total": 100}
+        yield {"status": "success", "completed": 100, "total": 100}
+
+    monkeypatch.setattr(main, "build_setup_prerequisites_status", _fake_status)
+    monkeypatch.setattr(main, "try_start_ollama", lambda: True)
+    monkeypatch.setattr(main, "wait_for_ollama_ready", _fake_wait_for_ollama_ready)
+    monkeypatch.setattr(
+        main,
+        "stream_pull_ollama_model_progress",
+        _fake_stream_pull_ollama_model_progress,
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post("/setup/prerequisites/stream", json={"approved": True})
+
+    assert response.status_code == 200
+    body = response.text
+    assert '"type": "pull_start"' in body
+    assert '"type": "pull_progress"' in body
+    assert '"type": "pull_done"' in body
+    assert f'"model": "{model_name}"' in body
+    assert '"type": "complete"' in body
+
+
+def test_setup_history_persists_runs_and_events(monkeypatch):
+    model_name = main.REQUIRED_VESTA_MODELS[0]
+    status_sequence = [
+        {
+            "ollama_installed": True,
+            "ollama_running": True,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": [],
+            "missing_models": [model_name],
+            "ready": False,
+        },
+        {
+            "ollama_installed": True,
+            "ollama_running": True,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": [model_name],
+            "missing_models": [],
+            "ready": True,
+        },
+    ]
+    call_index = {"value": 0}
+    pulled_models = []
+
+    async def _fake_status():
+        index = min(call_index["value"], len(status_sequence) - 1)
+        call_index["value"] += 1
+        return status_sequence[index]
+
+    async def _fake_pull_ollama_model(next_model_name):
+        pulled_models.append(next_model_name)
+
+    monkeypatch.setattr(main, "build_setup_prerequisites_status", _fake_status)
+    monkeypatch.setattr(main, "pull_ollama_model", _fake_pull_ollama_model)
+
+    with TestClient(main.app) as client:
+        setup_response = client.post(
+            "/setup/prerequisites",
+            json={"approved": True, "models": [model_name]},
+        )
+        assert setup_response.status_code == 200
+        run_id = setup_response.json()["run_id"]
+
+        history_response = client.get("/setup/history")
+
+    assert history_response.status_code == 200
+    runs = history_response.json()["runs"]
+    assert len(runs) == 1
+
+    run = runs[0]
+    assert run["id"] == run_id
+    assert run["requested_models"] == [model_name]
+    assert run["pulled_models"] == [model_name]
+    assert run["failed_models"] == []
+    assert run["success"] is True
+
+    event_types = [event["event_type"] for event in run["events"]]
+    assert "setup_start" in event_types
+    assert "status" in event_types
+    assert "target_models" in event_types
+    assert "pull_start" in event_types
+    assert "pull_done" in event_types
+    assert "complete" in event_types
+    assert pulled_models == [model_name]
+
+
+def test_setup_prerequisites_skips_already_downloaded_requested_models(monkeypatch):
+    pull_calls = []
+
+    async def _fake_status():
+        return {
+            "ollama_installed": True,
+            "ollama_running": True,
+            "required_models": main.REQUIRED_VESTA_MODELS,
+            "available_models": list(main.REQUIRED_VESTA_MODELS),
+            "missing_models": [],
+            "ready": True,
+        }
+
+    async def _fake_pull_ollama_model(model_name):
+        pull_calls.append(model_name)
+
+    monkeypatch.setattr(main, "build_setup_prerequisites_status", _fake_status)
+    monkeypatch.setattr(main, "pull_ollama_model", _fake_pull_ollama_model)
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/setup/prerequisites",
+            json={"approved": True, "models": [main.EMBEDDING_MODEL]},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pulled_models"] == []
+    assert body["ready"] is True
+    assert pull_calls == []
+
+
 def test_upload_endpoint_extracts_text_from_txt_file():
     with TestClient(main.app) as client:
         response = client.post(

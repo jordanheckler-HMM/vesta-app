@@ -12,17 +12,21 @@ import ChatSidebar, {
 import FilesTab from "@/components/FilesTab";
 import ModeSelector, { ThinkingMode } from "@/components/ModeSelector";
 import ModelSelector, { ModelType } from "@/components/ModelSelector";
+import SetupWizard from "@/components/SetupWizard";
 import ThemeSettingsTab, {
   type ModelSettingsValues,
+  type SetupPrerequisitesStatus,
 } from "@/components/ThemeSettingsTab";
 import VestaFooter from "@/components/VestaFooter";
 import VestaHeader from "@/components/VestaHeader";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/components/ui/use-toast";
 import type { FolderColorId } from "@/lib/folder-colors";
 import { useAppTheme } from "@/hooks/use-app-theme";
 
 const BACKEND_BASE_URL = "http://localhost:8090";
+const SETUP_WIZARD_SEEN_KEY = "vesta-setup-wizard-seen";
 
 interface UploadedFile {
   filename: string;
@@ -63,6 +67,21 @@ interface ModelSettingsResponse {
   ollama_connected: boolean;
 }
 
+interface SetupPrerequisitesRunResponse {
+  approved: boolean;
+  installed_ollama: boolean;
+  started_ollama: boolean;
+  pulled_models: string[];
+  failed_models: { model: string; error: string }[];
+  status: SetupPrerequisitesStatus;
+  ready: boolean;
+}
+
+interface SetupFailedModel {
+  model: string;
+  error: string;
+}
+
 interface IndexProps {
   isMiniView?: boolean;
 }
@@ -98,9 +117,25 @@ const Index = ({ isMiniView = false }: IndexProps) => {
   const [isOllamaConnected, setIsOllamaConnected] = useState(true);
   const [isModelSettingsLoading, setIsModelSettingsLoading] = useState(false);
   const [isModelSettingsSaving, setIsModelSettingsSaving] = useState(false);
+  const [setupStatus, setSetupStatus] = useState<SetupPrerequisitesStatus | null>(
+    null,
+  );
+  const [isSetupStatusLoading, setIsSetupStatusLoading] = useState(false);
+  const [isSetupRunning, setIsSetupRunning] = useState(false);
+  const [setupProgressSummary, setSetupProgressSummary] = useState("");
+  const [setupModelProgress, setSetupModelProgress] = useState<
+    Record<string, string>
+  >({});
+  const [setupFailedModels, setSetupFailedModels] = useState<SetupFailedModel[]>(
+    [],
+  );
+  const [isSetupWizardOpen, setIsSetupWizardOpen] = useState(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const initializedMainRef = useRef(false);
+  const setupProgressTimingRef = useRef<
+    Record<string, { lastCompleted: number; lastAt: number; rate: number }>
+  >({});
 
   const mapConversationMessagesToChat = (
     payloadMessages: ConversationMessageResponse[],
@@ -248,12 +283,86 @@ const Index = ({ isMiniView = false }: IndexProps) => {
     [isMiniView],
   );
 
+  const loadSetupStatus = useCallback(
+    async (showErrorToast = false) => {
+      setIsSetupStatusLoading(true);
+      try {
+        const response = await fetch(`${BACKEND_BASE_URL}/setup/prerequisites`);
+        if (!response.ok) {
+          throw new Error("Failed to load setup status");
+        }
+
+        const body = (await response.json()) as SetupPrerequisitesStatus;
+        setSetupStatus(body);
+        setIsOllamaConnected(body.ollama_running);
+        setAvailableOllamaModels(body.available_models || []);
+
+        const baselineProgress: Record<string, string> = {};
+        for (const modelName of body.required_models || []) {
+          baselineProgress[modelName] = body.missing_models.includes(modelName)
+            ? "pending"
+            : "ready";
+        }
+        setSetupModelProgress(baselineProgress);
+        if (body.ready) {
+          setSetupFailedModels([]);
+          setSetupProgressSummary("Local setup is ready.");
+        }
+      } catch (error) {
+        console.error("Failed to load setup status", error);
+        if (showErrorToast) {
+          toast({
+            variant: "destructive",
+            title: "Could not load setup status",
+            description: "Please verify the backend is running and try again.",
+          });
+        }
+      } finally {
+        setIsSetupStatusLoading(false);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (isMiniView || activeTab !== "settings" || modelSettings) {
       return;
     }
     void loadModelSettings(false);
   }, [activeTab, isMiniView, loadModelSettings, modelSettings]);
+
+  useEffect(() => {
+    if (
+      isMiniView ||
+      activeTab !== "settings" ||
+      setupStatus ||
+      isSetupStatusLoading
+    ) {
+      return;
+    }
+    void loadSetupStatus(false);
+  }, [activeTab, isMiniView, isSetupStatusLoading, loadSetupStatus, setupStatus]);
+
+  useEffect(() => {
+    void loadSetupStatus(false);
+  }, [loadSetupStatus]);
+
+  useEffect(() => {
+    if (isMiniView || isSetupStatusLoading || !setupStatus) {
+      return;
+    }
+
+    if (setupStatus.ready) {
+      setIsSetupWizardOpen(false);
+      return;
+    }
+
+    const hasSeenWizard = window.localStorage.getItem(SETUP_WIZARD_SEEN_KEY);
+    if (!hasSeenWizard) {
+      window.localStorage.setItem(SETUP_WIZARD_SEEN_KEY, "1");
+      setIsSetupWizardOpen(true);
+    }
+  }, [isMiniView, isSetupStatusLoading, setupStatus]);
 
   const resetChatState = () => {
     if (abortControllerRef.current) {
@@ -337,6 +446,19 @@ const Index = ({ isMiniView = false }: IndexProps) => {
   };
 
   const handleSend = async (content: string, files?: File[]) => {
+    if (isSetupStatusLoading || !setupStatus?.ready) {
+      if (!isMiniView) {
+        setActiveTab("settings");
+      }
+      toast({
+        variant: "destructive",
+        title: "Complete local setup first",
+        description:
+          "Vesta needs Ollama and required models before chat is available.",
+      });
+      return;
+    }
+
     let messageContent = content;
 
     if (files && files.length > 0) {
@@ -854,8 +976,426 @@ const Index = ({ isMiniView = false }: IndexProps) => {
     }
   };
 
+  const normalizeTargetModels = (models?: string[]): string[] => {
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    for (const rawModel of models || []) {
+      const modelName = rawModel.trim();
+      if (!modelName || seen.has(modelName)) {
+        continue;
+      }
+      seen.add(modelName);
+      normalized.push(modelName);
+    }
+    return normalized;
+  };
+
+  const formatEtaSeconds = (seconds: number): string => {
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      return "0s";
+    }
+
+    const rounded = Math.ceil(seconds);
+    const hours = Math.floor(rounded / 3600);
+    const minutes = Math.floor((rounded % 3600) / 60);
+    const secs = rounded % 60;
+
+    if (hours > 0) {
+      return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    }
+    if (minutes > 0) {
+      return secs > 0 ? `${minutes}m ${secs}s` : `${minutes}m`;
+    }
+    return `${secs}s`;
+  };
+
+  const upsertFailedModel = (
+    previous: SetupFailedModel[],
+    failure: SetupFailedModel,
+  ): SetupFailedModel[] => {
+    const filtered = previous.filter((entry) => entry.model !== failure.model);
+    return [...filtered, failure];
+  };
+
+  const handleRunPrerequisitesSetup = async (targetModels?: string[]) => {
+    const normalizedTargetModels = normalizeTargetModels(targetModels);
+    const isTargetedRetry = normalizedTargetModels.length > 0;
+    const approved = window.confirm(
+      isTargetedRetry
+        ? `Vesta will retry downloading ${normalizedTargetModels.join(", ")}. Continue?`
+        : "Vesta will try to install/start Ollama and download required Vesta models. Continue?",
+    );
+    if (!approved) {
+      return;
+    }
+
+    setIsSetupRunning(true);
+    setSetupProgressSummary(
+      isTargetedRetry ? "Retrying selected models..." : "Starting setup...",
+    );
+    setSetupFailedModels((previous) => {
+      if (!isTargetedRetry) {
+        return [];
+      }
+      const remaining = new Set(normalizedTargetModels);
+      return previous.filter((entry) => !remaining.has(entry.model));
+    });
+    setSetupModelProgress((prev) => {
+      const reset = { ...prev };
+      if (isTargetedRetry) {
+        for (const modelName of normalizedTargetModels) {
+          reset[modelName] = "pending";
+        }
+      } else {
+        for (const key of Object.keys(reset)) {
+          reset[key] = "pending";
+        }
+      }
+      return reset;
+    });
+    if (isTargetedRetry) {
+      for (const modelName of normalizedTargetModels) {
+        delete setupProgressTimingRef.current[modelName];
+      }
+    } else {
+      setupProgressTimingRef.current = {};
+    }
+    try {
+      const response = await fetch(`${BACKEND_BASE_URL}/setup/prerequisites/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(
+          isTargetedRetry
+            ? { approved: true, models: normalizedTargetModels }
+            : { approved: true },
+        ),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(errorBody.detail || "Failed to run setup");
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) {
+        throw new Error("Setup stream is unavailable right now.");
+      }
+
+      let buffer = "";
+      let completePayload: SetupPrerequisitesRunResponse | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
+
+        for (const chunk of chunks) {
+          const line = chunk
+            .split("\n")
+            .find((candidate) => candidate.startsWith("data: "));
+          if (!line) {
+            continue;
+          }
+
+          let event: Record<string, unknown>;
+          try {
+            event = JSON.parse(line.slice(6)) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          const eventType = String(event.type || "");
+
+          if (eventType === "error") {
+            throw new Error(String(event.message || "Setup failed"));
+          }
+
+          if (eventType === "status" && event.status) {
+            const status = event.status as SetupPrerequisitesStatus;
+            setSetupStatus(status);
+            setIsOllamaConnected(status.ollama_running);
+            setAvailableOllamaModels(status.available_models || []);
+            continue;
+          }
+
+          if (eventType === "target_models") {
+            const targetModels = Array.isArray(event.target_models)
+              ? event.target_models
+                  .map((value) => String(value).trim())
+                  .filter((value) => value.length > 0)
+              : [];
+            if (targetModels.length > 0) {
+              setSetupModelProgress((prev) => {
+                const next = { ...prev };
+                for (const modelName of targetModels) {
+                  next[modelName] = "pending";
+                }
+                return next;
+              });
+            }
+            continue;
+          }
+
+          if (eventType === "install_start") {
+            setSetupProgressSummary("Installing Ollama...");
+            continue;
+          }
+
+          if (eventType === "install_done") {
+            setSetupProgressSummary("Installed Ollama.");
+            continue;
+          }
+
+          if (eventType === "start_ollama") {
+            setSetupProgressSummary("Starting Ollama...");
+            continue;
+          }
+
+          if (eventType === "start_ollama_done") {
+            setSetupProgressSummary("Ollama is running.");
+            continue;
+          }
+
+          if (eventType === "pull_start") {
+            const modelName = String(event.model || "");
+            if (modelName) {
+              setSetupProgressSummary(`Downloading ${modelName}...`);
+              setupProgressTimingRef.current[modelName] = {
+                lastCompleted: 0,
+                lastAt: Date.now(),
+                rate: 0,
+              };
+              setSetupModelProgress((prev) => ({
+                ...prev,
+                [modelName]: "starting",
+              }));
+            }
+            continue;
+          }
+
+          if (eventType === "pull_progress") {
+            const modelName = String(event.model || "");
+            if (!modelName) {
+              continue;
+            }
+
+            const completed = Number(event.completed);
+            const total = Number(event.total);
+            const statusLabel =
+              Number.isFinite(completed) &&
+              Number.isFinite(total) &&
+              total > 0
+                ? (() => {
+                    const now = Date.now();
+                    const timing = setupProgressTimingRef.current[modelName] || {
+                      lastCompleted: completed,
+                      lastAt: now,
+                      rate: 0,
+                    };
+
+                    if (completed > timing.lastCompleted && now > timing.lastAt) {
+                      const deltaCompleted = completed - timing.lastCompleted;
+                      const deltaSeconds = (now - timing.lastAt) / 1000;
+                      if (deltaCompleted > 0 && deltaSeconds > 0) {
+                        const instantRate = deltaCompleted / deltaSeconds;
+                        timing.rate =
+                          timing.rate > 0
+                            ? timing.rate * 0.7 + instantRate * 0.3
+                            : instantRate;
+                      }
+                      timing.lastCompleted = completed;
+                      timing.lastAt = now;
+                    }
+                    setupProgressTimingRef.current[modelName] = timing;
+
+                    const percent = Math.floor((completed / total) * 100);
+                    const remaining = Math.max(0, total - completed);
+                    const etaLabel =
+                      timing.rate > 0 && remaining > 0
+                        ? ` • ${formatEtaSeconds(remaining / timing.rate)} left`
+                        : "";
+                    return `${percent}%${etaLabel}`;
+                  })()
+                : String(event.status || "downloading");
+
+            setSetupModelProgress((prev) => ({
+              ...prev,
+              [modelName]: statusLabel,
+            }));
+            continue;
+          }
+
+          if (eventType === "pull_done") {
+            const modelName = String(event.model || "");
+            if (modelName) {
+              delete setupProgressTimingRef.current[modelName];
+              setSetupFailedModels((previous) =>
+                previous.filter((entry) => entry.model !== modelName),
+              );
+              setSetupModelProgress((prev) => ({
+                ...prev,
+                [modelName]: "ready",
+              }));
+            }
+            continue;
+          }
+
+          if (eventType === "pull_error") {
+            const modelName = String(event.model || "");
+            const errorLabel = String(event.error || "error");
+            if (modelName) {
+              delete setupProgressTimingRef.current[modelName];
+              setSetupFailedModels((previous) =>
+                upsertFailedModel(previous, { model: modelName, error: errorLabel }),
+              );
+              setSetupModelProgress((prev) => ({
+                ...prev,
+                [modelName]: `error: ${errorLabel}`,
+              }));
+            }
+            continue;
+          }
+
+          if (eventType === "complete") {
+            completePayload = event as unknown as SetupPrerequisitesRunResponse;
+          }
+        }
+      }
+
+      if (!completePayload) {
+        throw new Error("Setup stream ended before completion.");
+      }
+
+      const body = completePayload;
+      setSetupStatus(body.status);
+      setIsOllamaConnected(body.status.ollama_running);
+      setAvailableOllamaModels(body.status.available_models || []);
+      setSetupFailedModels(body.failed_models || []);
+      setIsSetupWizardOpen(!body.ready);
+
+      if (body.ready) {
+        const actionDetails: string[] = [];
+        if (body.installed_ollama) {
+          actionDetails.push("installed Ollama");
+        }
+        if (body.started_ollama) {
+          actionDetails.push("started Ollama");
+        }
+        if (body.pulled_models.length > 0) {
+          actionDetails.push(`pulled ${body.pulled_models.length} model(s)`);
+        }
+
+        const summaryText =
+          actionDetails.length > 0
+            ? `Vesta ${actionDetails.join(", ")}.`
+            : "Ollama is ready and required models are available.";
+        setSetupProgressSummary(summaryText);
+        toast({
+          title: "Setup complete",
+          description: summaryText,
+        });
+      } else if (body.failed_models.length > 0) {
+        const firstFailure = body.failed_models[0];
+        const errorSummary = `${firstFailure.model}: ${firstFailure.error}`;
+        setSetupProgressSummary(`Setup completed with errors: ${errorSummary}`);
+        toast({
+          variant: "destructive",
+          title: "Setup completed with errors",
+          description: errorSummary,
+        });
+      } else {
+        setSetupProgressSummary("Setup ran, but some requirements are still pending.");
+        toast({
+          title: "Setup updated",
+          description: "Setup ran, but some requirements are still pending.",
+        });
+      }
+
+      await loadSetupStatus(false);
+      await loadModelSettings(false);
+    } catch (error) {
+      console.error("Failed to run setup", error);
+      setIsSetupWizardOpen(true);
+      setSetupProgressSummary(
+        error instanceof Error ? `Setup failed: ${error.message}` : "Setup failed.",
+      );
+      toast({
+        variant: "destructive",
+        title: "Setup failed",
+        description: error instanceof Error ? error.message : "Please try again.",
+      });
+    } finally {
+      setIsSetupRunning(false);
+    }
+  };
+
   const chatPanel = (
     <>
+      {(isSetupStatusLoading || !setupStatus?.ready) && (
+        <div className="mx-4 mt-4 rounded-md border border-vesta-header-border bg-card px-4 py-3">
+          <p className="text-sm font-semibold text-foreground">
+            Local setup required before chat
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {isSetupStatusLoading
+              ? "Checking local AI setup..."
+              : "Vesta needs Ollama running and required models downloaded."}
+          </p>
+          {!isSetupStatusLoading && setupStatus && (
+            <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+              {!setupStatus.ollama_installed ? (
+                <p>Ollama is not installed.</p>
+              ) : null}
+              {setupStatus.ollama_installed && !setupStatus.ollama_running ? (
+                <p>Ollama is installed but not running.</p>
+              ) : null}
+              {setupStatus.missing_models.length > 0 ? (
+                <p>Missing models: {setupStatus.missing_models.join(", ")}</p>
+              ) : null}
+            </div>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                void handleRunPrerequisitesSetup();
+              }}
+              disabled={isSetupStatusLoading || isSetupRunning}
+            >
+              {isSetupRunning ? "Setting up..." : "Approve and set up"}
+            </Button>
+            {!isMiniView ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setIsSetupWizardOpen(true)}
+              >
+                Open setup wizard
+              </Button>
+            ) : null}
+            {!isMiniView ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setActiveTab("settings")}
+              >
+                Open settings
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      )}
+
       {isMiniView && (
         <>
           <ModeSelector selectedMode={mode} onModeChange={setMode} compact />
@@ -874,7 +1414,12 @@ const Index = ({ isMiniView = false }: IndexProps) => {
         <ChatInput
           onSend={handleSend}
           onCancel={handleCancelGeneration}
-          disabled={isLoading || isConversationLoading}
+          disabled={
+            isLoading ||
+            isConversationLoading ||
+            isSetupStatusLoading ||
+            !setupStatus?.ready
+          }
           isStreaming={isStreaming}
           compact={isMiniView}
           topContent={
@@ -962,17 +1507,46 @@ const Index = ({ isMiniView = false }: IndexProps) => {
                 onThemeChange={setTheme}
                 modelSettings={draftModelSettings}
                 availableModels={availableOllamaModels}
+                setupStatus={setupStatus}
                 ollamaConnected={isOllamaConnected}
                 loadingModels={isModelSettingsLoading}
+                loadingSetupStatus={isSetupStatusLoading}
                 savingModels={isModelSettingsSaving}
+                runningSetup={isSetupRunning}
+                setupProgressSummary={setupProgressSummary}
+                setupModelProgress={setupModelProgress}
                 onModelSettingChange={handleModelSettingChange}
                 onSaveModelSettings={handleSaveModelSettings}
                 onRefreshModels={() => loadModelSettings(true)}
+                onRefreshSetupStatus={() => loadSetupStatus(true)}
+                onRunPrerequisiteSetup={handleRunPrerequisitesSetup}
               />
             </TabsContent>
           </Tabs>
         </div>
       )}
+
+      {!isMiniView ? (
+        <SetupWizard
+          isOpen={isSetupWizardOpen}
+          setupStatus={setupStatus}
+          loadingStatus={isSetupStatusLoading}
+          runningSetup={isSetupRunning}
+          progressSummary={setupProgressSummary}
+          modelProgress={setupModelProgress}
+          failedModels={setupFailedModels}
+          onRunSetup={() => {
+            void handleRunPrerequisitesSetup();
+          }}
+          onRetryModel={(modelName) => {
+            void handleRunPrerequisitesSetup([modelName]);
+          }}
+          onRefreshStatus={() => {
+            void loadSetupStatus(true);
+          }}
+          onClose={() => setIsSetupWizardOpen(false)}
+        />
+      ) : null}
     </div>
   );
 };
