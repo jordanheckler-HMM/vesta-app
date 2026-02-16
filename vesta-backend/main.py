@@ -73,6 +73,15 @@ FOLDER_COLOR_OPTIONS = {"sand", "stone", "sage", "slate", "taupe", "clay"}
 DEFAULT_FOLDER_COLOR = "sand"
 
 
+def normalize_ollama_model_name(model_name: str) -> str:
+    normalized = model_name.strip()
+    if not normalized:
+        return ""
+    if ":" not in normalized:
+        return f"{normalized}:latest"
+    return normalized
+
+
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
@@ -1525,11 +1534,15 @@ async def build_setup_prerequisites_status() -> Dict[str, Any]:
                 file=sys.stderr,
             )
 
-    available_set = set(available_models)
+    available_set = {
+        normalize_ollama_model_name(model_name)
+        for model_name in available_models
+        if model_name.strip()
+    }
     missing_models = [
         model_name
         for model_name in REQUIRED_VESTA_MODELS
-        if model_name not in available_set
+        if normalize_ollama_model_name(model_name) not in available_set
     ]
 
     return {
@@ -1545,7 +1558,11 @@ async def build_setup_prerequisites_status() -> Dict[str, Any]:
 def resolve_target_models(
     status: Dict[str, Any], requested_models: Optional[List[str]]
 ) -> List[str]:
-    available_set = set(status.get("available_models", []))
+    available_set = {
+        normalize_ollama_model_name(str(model_name))
+        for model_name in status.get("available_models", [])
+        if str(model_name).strip()
+    }
     if not requested_models:
         return list(status.get("missing_models", []))
 
@@ -1558,7 +1575,11 @@ def resolve_target_models(
         seen.add(model_name)
         normalized.append(model_name)
 
-    return [model_name for model_name in normalized if model_name not in available_set]
+    return [
+        model_name
+        for model_name in normalized
+        if normalize_ollama_model_name(model_name) not in available_set
+    ]
 
 
 async def embed_in_batches(chunks: List[str], batch_size: int = 24) -> List[List[float]]:
@@ -2902,11 +2923,15 @@ async def update_model_settings(request: ModelSettingsUpdateRequest):
         ollama_connected = False
 
     if available_models:
-        available_set = set(available_models)
+        available_set = {
+            normalize_ollama_model_name(model_name)
+            for model_name in available_models
+            if model_name.strip()
+        }
         invalid_keys = [
             profile_key
             for profile_key in MODEL_PROFILE_KEYS
-            if next_config[profile_key] not in available_set
+            if normalize_ollama_model_name(next_config[profile_key]) not in available_set
         ]
         if invalid_keys:
             raise HTTPException(

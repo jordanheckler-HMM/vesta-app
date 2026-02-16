@@ -125,6 +125,31 @@ def test_setup_prerequisites_status_includes_embedding_model(monkeypatch):
     assert body["ready"] is False
 
 
+def test_setup_prerequisites_status_accepts_latest_tag_aliases(monkeypatch):
+    async def _fake_running():
+        return True
+
+    async def _fake_fetch_ollama_model_names():
+        return [
+            "hymetalab/vesta-lite:latest",
+            "hymetalab/vesta-general:latest",
+            "hymetalab/vesta-deep:latest",
+            main.EMBEDDING_MODEL,
+        ]
+
+    monkeypatch.setattr(main, "is_ollama_installed", lambda: True)
+    monkeypatch.setattr(main, "is_ollama_running", _fake_running)
+    monkeypatch.setattr(main, "fetch_ollama_model_names", _fake_fetch_ollama_model_names)
+
+    with TestClient(main.app) as client:
+        response = client.get("/setup/prerequisites")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["missing_models"] == []
+    assert body["ready"] is True
+
+
 def test_setup_prerequisites_requires_approval():
     with TestClient(main.app) as client:
         response = client.post("/setup/prerequisites", json={"approved": False})
@@ -946,3 +971,28 @@ def test_model_settings_are_persisted_and_used_for_chat(monkeypatch):
         )
         assert auto.status_code == 200
         assert captured["model_name"] == "custom-deep"
+
+
+def test_model_settings_validation_accepts_untagged_names_when_latest_exists(monkeypatch):
+    async def _fake_list_models():
+        return [
+            "hymetalab/vesta-lite:latest",
+            "hymetalab/vesta-general:latest",
+            "hymetalab/vesta-deep:latest",
+        ]
+
+    monkeypatch.setattr(main, "fetch_ollama_model_names", _fake_list_models)
+
+    with TestClient(main.app) as client:
+        response = client.put(
+            "/settings/models",
+            json={
+                "lite": "hymetalab/vesta-lite",
+                "general": "hymetalab/vesta-general",
+                "deep": "hymetalab/vesta-deep",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["configured_models"]["lite"] == "hymetalab/vesta-lite"
