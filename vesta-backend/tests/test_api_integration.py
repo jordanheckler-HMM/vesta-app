@@ -31,9 +31,12 @@ class _UnavailableAsyncClient(_HealthyAsyncClient):
 @pytest.fixture(autouse=True)
 def isolate_knowledge_store(tmp_path, monkeypatch):
     monkeypatch.setenv("VESTA_DATA_DIR", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
     main.KNOWLEDGE_STORE = None
+    main.ENV_LOADED = False
     yield
     main.KNOWLEDGE_STORE = None
+    main.ENV_LOADED = False
 
 
 async def _fake_embed_texts(inputs, model_name=main.EMBEDDING_MODEL):
@@ -996,3 +999,466 @@ def test_model_settings_validation_accepts_untagged_names_when_latest_exists(mon
     assert response.status_code == 200
     body = response.json()
     assert body["configured_models"]["lite"] == "hymetalab/vesta-lite"
+
+
+def _sample_forecast_points() -> list[dict]:
+    now = int(main.time.time())
+    points = []
+    for day in range(5):
+        ts = now + (day * 24 * 3600) + 3600
+        points.append(
+            {
+                "forecast_ts": str(ts),
+                "temp_f": 68.0 + day,
+                "temp_min_f": 62.0 + day,
+                "temp_max_f": 74.0 + day,
+                "humidity_pct": 50.0,
+                "wind_mph": 9.0 + day,
+                "precip_prob": 0.2 + (day * 0.05),
+                "precip_in": 0.05 + (day * 0.02),
+                "condition_code": 800,
+                "condition_main": "Clouds",
+                "condition_desc": "broken clouds",
+                "confidence_score": 0.8 - (day * 0.05),
+                "raw_json": {"test": True, "day": day},
+            }
+        )
+    return points
+
+
+def test_weather_status_returns_disabled_when_api_key_missing(monkeypatch):
+    monkeypatch.delenv("OPENWEATHER_API_KEY", raising=False)
+
+    with TestClient(main.app) as client:
+        response = client.get("/weather/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enabled"] is False
+    assert body["reason"] == "missing_api_key"
+
+
+def test_weather_status_returns_enabled_when_api_key_present(monkeypatch):
+    monkeypatch.setenv("OPENWEATHER_API_KEY", "test-key")
+
+    with TestClient(main.app) as client:
+        response = client.get("/weather/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enabled"] is True
+    assert body["reason"] is None
+
+
+def test_weather_status_ignores_alert_subscription_401(monkeypatch):
+    monkeypatch.setenv("OPENWEATHER_API_KEY", "test-key")
+    store = main.get_knowledge_store()
+    store.log_weather_api_call(
+        endpoint="alerts",
+        success=False,
+        http_status=401,
+        latency_ms=10.0,
+        error_text="Please note that using One Call 3.0 requires a separate subscription",
+    )
+
+    with TestClient(main.app) as client:
+        response = client.get("/weather/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enabled"] is True
+    assert body["reason"] is None
+
+
+def test_weather_location_resolution_and_settings_persistence(monkeypatch):
+    monkeypatch.setenv("OPENWEATHER_API_KEY", "test-key")
+
+    async def _fake_resolve(city, state, country):
+        assert city == "Austin"
+        return [
+            {
+                "name": "Austin",
+                "state": "TX",
+                "country": "US",
+                "lat": 30.2672,
+                "lon": -97.7431,
+            }
+        ]
+
+    monkeypatch.setattr(main, "resolve_openweather_location", _fake_resolve)
+
+    with TestClient(main.app) as client:
+        resolved = client.get("/weather/resolve-location?city=Austin&state=TX&country=US")
+        assert resolved.status_code == 200
+        assert len(resolved.json()["results"]) == 1
+
+        updated = client.put(
+            "/weather/settings",
+            json={
+                "mode": "construction",
+                "city": "Austin",
+                "state": "TX",
+                "country": "US",
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["mode"] == "construction"
+        assert updated.json()["location"]["city"] == "Austin"
+
+        current = client.get("/weather/settings")
+        assert current.status_code == 200
+        assert current.json()["mode"] == "construction"
+        assert current.json()["location"]["lat"] == 30.2672
+
+
+def test_weather_refresh_persists_snapshot_and_predictions(monkeypatch):
+    monkeypatch.setenv("OPENWEATHER_API_KEY", "test-key")
+
+    async def _fake_resolve(city, state, country):
+        return [
+            {
+                "name": "Austin",
+                "state": "TX",
+                "country": "US",
+                "lat": 30.2672,
+                "lon": -97.7431,
+            }
+        ]
+
+    async def _fake_current(lat, lon):
+        return {
+            "observed_ts": int(main.time.time()),
+            "temp_f": 71.5,
+            "feels_like_f": 72.0,
+            "humidity_pct": 54.0,
+            "wind_mph": 12.0,
+            "wind_gust_mph": 18.0,
+            "precip_in": 0.1,
+            "condition_code": 801,
+            "condition_main": "Clouds",
+            "condition_desc": "few clouds",
+            "raw_json": {"test": "current"},
+        }
+
+    async def _fake_forecast(lat, lon):
+        return _sample_forecast_points()
+
+    async def _fake_alerts(lat, lon):
+        return [
+            {
+                "event": "Wind Advisory",
+                "severity": "moderate",
+                "sender_name": "NWS",
+                "start_ts": str(int(main.time.time())),
+                "end_ts": str(int(main.time.time()) + 7200),
+                "description": "Gusty winds expected.",
+                "raw_json": {"test": "alert"},
+            }
+        ]
+
+    monkeypatch.setattr(main, "resolve_openweather_location", _fake_resolve)
+    monkeypatch.setattr(main, "fetch_openweather_current", _fake_current)
+    monkeypatch.setattr(main, "fetch_openweather_forecast", _fake_forecast)
+    monkeypatch.setattr(main, "fetch_openweather_alerts", _fake_alerts)
+
+    with TestClient(main.app) as client:
+        save_settings = client.put(
+            "/weather/settings",
+            json={
+                "mode": "storm_damage",
+                "city": "Austin",
+                "state": "TX",
+                "country": "US",
+            },
+        )
+        assert save_settings.status_code == 200
+
+        refreshed = client.post("/weather/refresh")
+        assert refreshed.status_code == 200
+        body = refreshed.json()
+        assert body["mode"] == "storm_damage"
+        assert len(body["predictions"]) == 5
+        assert 0 <= body["coherence"]["integrity"] <= 100
+        assert 0 <= body["coherence"]["resilience"] <= 100
+        assert 0 <= body["coherence"]["meaning"] <= 100
+        assert 0 <= body["coherence"]["cci"] <= 100
+
+        dashboard = client.get("/weather/dashboard")
+        assert dashboard.status_code == 200
+        dashboard_body = dashboard.json()
+        assert len(dashboard_body["forecast_daily"]) == 5
+        assert len(dashboard_body["predictions"]) >= 5
+
+
+def test_weather_dashboard_degrades_when_alerts_require_subscription(monkeypatch):
+    monkeypatch.setenv("OPENWEATHER_API_KEY", "test-key")
+
+    async def _fake_resolve(city, state, country):
+        return [
+            {
+                "name": "Edwardsville",
+                "state": "IL",
+                "country": "US",
+                "lat": 38.8114,
+                "lon": -89.9532,
+            }
+        ]
+
+    async def _fake_current(lat, lon):
+        return {
+            "observed_ts": int(main.time.time()),
+            "temp_f": 58.0,
+            "feels_like_f": 57.0,
+            "humidity_pct": 61.0,
+            "wind_mph": 12.0,
+            "wind_gust_mph": None,
+            "precip_in": 0.0,
+            "condition_code": 800,
+            "condition_main": "Clear",
+            "condition_desc": "clear sky",
+            "raw_json": {"test": "current"},
+        }
+
+    async def _fake_forecast(lat, lon):
+        return _sample_forecast_points()
+
+    async def _fake_alerts(lat, lon):
+        raise main.WeatherAPIError(
+            "OpenWeather One Call 3.0 subscription is required for alerts."
+        )
+
+    monkeypatch.setattr(main, "resolve_openweather_location", _fake_resolve)
+    monkeypatch.setattr(main, "fetch_openweather_current", _fake_current)
+    monkeypatch.setattr(main, "fetch_openweather_forecast", _fake_forecast)
+    monkeypatch.setattr(main, "fetch_openweather_alerts", _fake_alerts)
+
+    with TestClient(main.app) as client:
+        settings_response = client.put(
+            "/weather/settings",
+            json={
+                "mode": "general",
+                "city": "Edwardsville",
+                "state": "IL",
+                "country": "US",
+            },
+        )
+        assert settings_response.status_code == 200
+
+        dashboard = client.get("/weather/dashboard")
+        assert dashboard.status_code == 200
+        body = dashboard.json()
+        assert body["current"] is not None
+        assert len(body["forecast_daily"]) > 0
+        assert body["alerts"] == []
+        assert "alerts_unavailable" in str(body.get("warning") or "")
+
+
+def test_weather_current_uses_cache_when_fresh(monkeypatch):
+    monkeypatch.setenv("OPENWEATHER_API_KEY", "test-key")
+    store = main.get_knowledge_store()
+
+    lat = 30.2672
+    lon = -97.7431
+    store.save_current_weather(
+        lat=lat,
+        lon=lon,
+        current={
+            "observed_ts": int(main.time.time()),
+            "temp_f": 70.0,
+            "feels_like_f": 70.0,
+            "humidity_pct": 50.0,
+            "wind_mph": 8.0,
+            "wind_gust_mph": None,
+            "precip_in": 0.0,
+            "condition_code": 800,
+            "condition_main": "Clear",
+            "condition_desc": "clear sky",
+            "raw_json": {"cached": True},
+        },
+    )
+
+    called = {"value": 0}
+
+    async def _fake_current(lat, lon):
+        called["value"] += 1
+        return {}
+
+    monkeypatch.setattr(main, "fetch_openweather_current", _fake_current)
+
+    with TestClient(main.app) as client:
+        response = client.get(f"/weather/current?lat={lat}&lon={lon}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "cache"
+    assert body["stale"] is False
+    assert called["value"] == 0
+
+
+def test_weather_current_refreshes_when_cache_is_stale(monkeypatch):
+    monkeypatch.setenv("OPENWEATHER_API_KEY", "test-key")
+    store = main.get_knowledge_store()
+
+    lat = 30.2672
+    lon = -97.7431
+    stale_ts = str(int(main.time.time()) - 4_000)
+    store.save_weather_snapshot(
+        lat=lat,
+        lon=lon,
+        current={
+            "observed_ts": int(main.time.time()) - 4_000,
+            "temp_f": 65.0,
+            "feels_like_f": 65.0,
+            "humidity_pct": 44.0,
+            "wind_mph": 6.0,
+            "wind_gust_mph": None,
+            "precip_in": 0.0,
+            "condition_code": 800,
+            "condition_main": "Clear",
+            "condition_desc": "clear sky",
+            "raw_json": {"cached": True},
+        },
+        forecast_points=[],
+        alerts=[],
+        fetched_at=stale_ts,
+    )
+
+    async def _fake_current(lat, lon):
+        return {
+            "observed_ts": int(main.time.time()),
+            "temp_f": 78.0,
+            "feels_like_f": 78.0,
+            "humidity_pct": 61.0,
+            "wind_mph": 13.0,
+            "wind_gust_mph": None,
+            "precip_in": 0.0,
+            "condition_code": 801,
+            "condition_main": "Clouds",
+            "condition_desc": "few clouds",
+            "raw_json": {"live": True},
+        }
+
+    monkeypatch.setattr(main, "fetch_openweather_current", _fake_current)
+
+    with TestClient(main.app) as client:
+        response = client.get(f"/weather/current?lat={lat}&lon={lon}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "live"
+    assert int(body["data"]["temp_f"]) == 78
+
+
+def test_coherence_scores_stay_in_range_and_vary_by_mode():
+    current = {
+        "temp_f": 72.0,
+        "humidity_pct": 51.0,
+        "wind_mph": 14.0,
+        "precip_in": 0.15,
+        "condition_code": 500,
+    }
+    forecast_points = _sample_forecast_points()
+    forecast_daily = main.summarize_daily_forecast(forecast_points)
+    alerts = [{"event": "Thunderstorm Watch", "description": "hail possible"}]
+
+    general = main.calculate_coherence_scores(
+        mode="general",
+        current=current,
+        forecast_points=forecast_points,
+        forecast_daily=forecast_daily,
+        alerts=alerts,
+    )
+    storm = main.calculate_coherence_scores(
+        mode="storm_damage",
+        current=current,
+        forecast_points=forecast_points,
+        forecast_daily=forecast_daily,
+        alerts=alerts,
+    )
+
+    for key in ("integrity", "resilience", "meaning", "cci"):
+        assert 0 <= general[key] <= 100
+        assert 0 <= storm[key] <= 100
+    assert storm["cci"] != general["cci"]
+
+
+def test_chat_with_weather_intent_includes_weather_metadata(monkeypatch):
+    captured = {}
+
+    async def _fake_retrieve_knowledge_context(query, folder_id=None):
+        return "", []
+
+    async def _fake_retrieve_weather_context(query):
+        return (
+            "Weather Intelligence Context:\nCurrent: 71F and windy.",
+            [
+                {
+                    "source_type": "weather",
+                    "label": "Current conditions",
+                    "observed_at": str(int(main.time.time())),
+                    "mode": "general",
+                }
+            ],
+        )
+
+    async def _fake_stream(model_name, prompt, sources=None):
+        captured["prompt"] = prompt
+        captured["sources"] = sources or []
+        yield f"data: {main.json.dumps({'metadata': {'sources': sources or []}})}\n\n"
+        yield f"data: {main.json.dumps({'content': 'weather answer', 'done': True})}\n\n"
+
+    monkeypatch.setattr(main, "retrieve_knowledge_context", _fake_retrieve_knowledge_context)
+    monkeypatch.setattr(main, "retrieve_weather_context", _fake_retrieve_weather_context)
+    monkeypatch.setattr(main, "stream_ollama_response", _fake_stream)
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "message": "What is the weather this week?",
+                "messages": [],
+                "model": "general",
+            },
+        )
+
+    assert response.status_code == 200
+    assert "Weather Intelligence Context:" in captured["prompt"]
+    assert captured["sources"][0]["source_type"] == "weather"
+    assert '"metadata"' in response.text
+
+
+def test_chat_without_weather_intent_skips_weather_context(monkeypatch):
+    captured = {"weather_called": False}
+
+    async def _fake_retrieve_knowledge_context(query, folder_id=None):
+        return "", []
+
+    async def _fake_retrieve_weather_context(query):
+        captured["weather_called"] = True
+        return "unused", [{"source_type": "weather", "label": "unused"}]
+
+    async def _fake_stream(model_name, prompt, sources=None):
+        captured["sources"] = sources or []
+        yield f"data: {main.json.dumps({'metadata': {'sources': sources or []}})}\n\n"
+        yield f"data: {main.json.dumps({'content': 'ok', 'done': True})}\n\n"
+
+    monkeypatch.setattr(main, "is_weather_intent", lambda message: False)
+    monkeypatch.setattr(main, "retrieve_knowledge_context", _fake_retrieve_knowledge_context)
+    monkeypatch.setattr(main, "retrieve_weather_context", _fake_retrieve_weather_context)
+    monkeypatch.setattr(main, "stream_ollama_response", _fake_stream)
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "message": "hello there",
+                "messages": [],
+                "model": "general",
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured["weather_called"] is False
+    assert captured["sources"] == []

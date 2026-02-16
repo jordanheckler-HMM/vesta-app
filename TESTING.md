@@ -22,6 +22,12 @@ Coverage includes:
 - `/chat` metadata stream with retrieval sources
 - folder-priority retrieval with global fallback
 - `/chat` fallback behavior when retrieval fails
+- weather status (`/weather/status`) enable/disable behavior
+- weather location resolve + settings persistence
+- weather refresh/dashboard persistence and prediction generation
+- weather cache hit + stale refresh behavior
+- weather coherence score bounds and mode variance
+- weather-aware chat metadata (`source_type: "weather"`) and intent gating
 
 ### Frontend
 
@@ -41,6 +47,8 @@ Coverage includes:
 - Files tab scope switch (global vs folder endpoints)
 - Message source labels rendering
 - Mini view hiding the Files tab
+- Weather tab visibility gating from `/weather/status`
+- Weather source labels rendering in assistant message bubbles
 
 ### Tauri Rust shell
 
@@ -61,6 +69,20 @@ cargo check
 4. Click outside mini chat and verify it auto-hides.
 5. From tray menu choose `Open Main Window` and verify main window restores.
 6. From tray menu choose `Quit Vesta` and verify app plus backend process exit.
+
+## Manual Weather tab validation
+
+1. Ensure `OPENWEATHER_API_KEY` is configured in backend env.
+2. Start desktop dev:
+   ```bash
+   cd vesta-frontend
+   npm run tauri:dev
+   ```
+3. Confirm main tab row includes `Weather` between `Files` and `Settings`.
+4. In Weather tab, set city/state and save settings.
+5. Confirm dashboard renders current conditions, 5-day chart, coherence score, predictions, and insights.
+6. Click manual refresh and confirm dashboard updates without blocking chat.
+7. Remove/invalid API key and restart; confirm Weather tab is hidden while Chat/Files/Settings still work.
 
 ## Manual saved chats + folders validation
 
@@ -89,3 +111,5 @@ cargo check
   - `hymetalab/vesta-lite`
   - `hymetalab/vesta-deep`
   - `qwen3-embedding:0.6b`
+- OpenWeather key configured for weather features:
+  - `OPENWEATHER_API_KEY=...`

@@ -22,3 +22,15 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+.env.*
+!.env.example
+vesta-backend/.env
+vesta-backend/.env.*
+!vesta-backend/.env.example

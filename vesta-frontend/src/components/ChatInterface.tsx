@@ -12,13 +12,16 @@ export interface Message {
 }
 
 export interface RetrievedSource {
-  document_id: string;
-  filename: string;
-  chunk_index: number;
-  score: number;
-  source_type?: "global" | "folder";
+  document_id?: string;
+  filename?: string;
+  chunk_index?: number;
+  score?: number;
+  source_type?: "global" | "folder" | "weather";
   folder_id?: string;
   folder_name?: string;
+  label?: string;
+  observed_at?: string;
+  mode?: string;
 }
 
 interface ChatInterfaceProps {

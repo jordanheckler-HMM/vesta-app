@@ -8,13 +8,16 @@ interface MessageBubbleProps {
   isStreaming?: boolean;
   modelUsed?: string | null;
   sources?: {
-    document_id: string;
-    filename: string;
-    chunk_index: number;
-    score: number;
-    source_type?: "global" | "folder";
+    document_id?: string;
+    filename?: string;
+    chunk_index?: number;
+    score?: number;
+    source_type?: "global" | "folder" | "weather";
     folder_id?: string;
     folder_name?: string;
+    label?: string;
+    observed_at?: string;
+    mode?: string;
   }[];
 }
 
@@ -42,6 +45,24 @@ const MessageBubble = ({ role, content, isStreaming, modelUsed, sources }: Messa
     } catch (err) {
       console.error('Failed to copy:', err);
     }
+  };
+
+  const formatSourceLabel = (
+    source: NonNullable<MessageBubbleProps["sources"]>[number],
+  ): string => {
+    if (source.source_type === "weather") {
+      const modeSuffix = source.mode
+        ? ` (${source.mode.replace(/_/g, " ")})`
+        : "";
+      return `Weather: ${source.label || "Context"}${modeSuffix}`;
+    }
+
+    const chunkSuffix =
+      typeof source.chunk_index === "number" ? `#${source.chunk_index}` : "";
+    if (source.source_type === "folder") {
+      return `Folder ${source.folder_name || "Project"}: ${source.filename || "source"}${chunkSuffix}`;
+    }
+    return `Global: ${source.filename || "source"}${chunkSuffix}`;
   };
 
   return (
@@ -114,13 +135,19 @@ const MessageBubble = ({ role, content, isStreaming, modelUsed, sources }: Messa
                 <div className="flex flex-wrap gap-1.5">
                   {sources.map((source, index) => (
                     <span
-                      key={`${source.document_id}-${source.chunk_index}-${index}`}
+                      key={
+                        source.document_id
+                          ? `${source.document_id}-${source.chunk_index ?? "na"}-${index}`
+                          : `${source.source_type || "unknown"}-${source.label || source.filename || "source"}-${index}`
+                      }
                       className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground"
-                      title={`${source.filename} | chunk ${source.chunk_index} | score ${source.score}`}
+                      title={
+                        source.source_type === "weather"
+                          ? `${source.label || "Weather context"}${source.observed_at ? ` | ${source.observed_at}` : ""}`
+                          : `${source.filename || "source"} | chunk ${source.chunk_index ?? "n/a"} | score ${source.score ?? "n/a"}`
+                      }
                     >
-                      {source.source_type === "folder"
-                        ? `Folder ${source.folder_name || "Project"}: ${source.filename}#${source.chunk_index}`
-                        : `Global: ${source.filename}#${source.chunk_index}`}
+                      {formatSourceLabel(source)}
                     </span>
                   ))}
                 </div>

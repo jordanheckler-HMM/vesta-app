@@ -1,4 +1,6 @@
 import asyncio
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, File, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -11,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -19,6 +22,8 @@ import threading
 import time
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Tuple
 from uuid import uuid4
+
+from dotenv import load_dotenv
 
 # Import routing utilities and audit logger
 from routing_utils import (
@@ -71,6 +76,22 @@ RETRIEVAL_TOP_K = 5
 RETRIEVAL_MIN_SCORE = 0.2
 FOLDER_COLOR_OPTIONS = {"sand", "stone", "sage", "slate", "taupe", "clay"}
 DEFAULT_FOLDER_COLOR = "sand"
+DEFAULT_WEATHER_MODE = "general"
+WEATHER_MODE_OPTIONS = {
+    "storm_damage",
+    "lawn_care",
+    "construction",
+    "general",
+}
+WEATHER_CACHE_TTL_MINUTES = 45
+OPENWEATHER_CURRENT_URL = "https://api.openweathermap.org/data/2.5/weather"
+OPENWEATHER_FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
+OPENWEATHER_ONECALL_URL = "https://api.openweathermap.org/data/3.0/onecall"
+OPENWEATHER_GEOCODE_URL = "https://api.openweathermap.org/geo/1.0/direct"
+WEATHER_INTENT_PATTERN = re.compile(
+    r"(weather|forecast|storm|rain|snow|wind|hail|humidity|temperature|lawn|construction|alerts?)",
+    re.IGNORECASE,
+)
 
 
 def normalize_ollama_model_name(model_name: str) -> str:
@@ -136,6 +157,13 @@ class ModelSettingsUpdateRequest(BaseModel):
 class SetupPrerequisitesRequest(BaseModel):
     approved: bool = False
     models: Optional[List[str]] = None
+
+
+class WeatherSettingsUpdateRequest(BaseModel):
+    mode: Literal["storm_damage", "lawn_care", "construction", "general"]
+    city: str = Field(..., min_length=1, max_length=120)
+    state: Optional[str] = Field(default=None, max_length=120)
+    country: Optional[str] = Field(default="US", min_length=2, max_length=3)
 
 
 class KnowledgeStore:
@@ -283,6 +311,118 @@ class KnowledgeStore:
 
                     CREATE INDEX IF NOT EXISTS idx_setup_runs_started_at
                         ON setup_runs(started_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS weather_settings (
+                        id TEXT PRIMARY KEY,
+                        mode TEXT NOT NULL,
+                        city TEXT,
+                        state TEXT,
+                        country TEXT NOT NULL,
+                        lat REAL,
+                        lon REAL,
+                        cache_ttl_minutes INTEGER NOT NULL DEFAULT 45,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS weather_data (
+                        id TEXT PRIMARY KEY,
+                        fetched_at TEXT NOT NULL,
+                        lat REAL NOT NULL,
+                        lon REAL NOT NULL,
+                        temp_f REAL,
+                        feels_like_f REAL,
+                        humidity_pct REAL,
+                        wind_mph REAL,
+                        wind_gust_mph REAL,
+                        precip_in REAL,
+                        condition_code INTEGER,
+                        condition_main TEXT,
+                        condition_desc TEXT,
+                        raw_json TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_weather_data_loc_time
+                        ON weather_data(lat, lon, fetched_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS forecasts (
+                        id TEXT PRIMARY KEY,
+                        fetched_at TEXT NOT NULL,
+                        forecast_ts TEXT NOT NULL,
+                        lat REAL NOT NULL,
+                        lon REAL NOT NULL,
+                        temp_f REAL,
+                        temp_min_f REAL,
+                        temp_max_f REAL,
+                        humidity_pct REAL,
+                        wind_mph REAL,
+                        precip_prob REAL,
+                        precip_in REAL,
+                        condition_code INTEGER,
+                        condition_main TEXT,
+                        condition_desc TEXT,
+                        confidence_score REAL,
+                        raw_json TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_forecasts_loc_time
+                        ON forecasts(lat, lon, forecast_ts);
+
+                    CREATE TABLE IF NOT EXISTS weather_alerts (
+                        id TEXT PRIMARY KEY,
+                        fetched_at TEXT NOT NULL,
+                        lat REAL NOT NULL,
+                        lon REAL NOT NULL,
+                        event TEXT,
+                        severity TEXT,
+                        sender_name TEXT,
+                        start_ts TEXT,
+                        end_ts TEXT,
+                        description TEXT,
+                        raw_json TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS predictions (
+                        id TEXT PRIMARY KEY,
+                        created_at TEXT NOT NULL,
+                        mode TEXT NOT NULL,
+                        target_date TEXT NOT NULL,
+                        integrity REAL NOT NULL,
+                        resilience REAL NOT NULL,
+                        meaning REAL NOT NULL,
+                        cci_score REAL NOT NULL,
+                        probability REAL NOT NULL,
+                        prediction_text TEXT NOT NULL,
+                        factors_json TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_predictions_mode_target
+                        ON predictions(mode, target_date);
+
+                    CREATE TABLE IF NOT EXISTS prediction_outcomes (
+                        id TEXT PRIMARY KEY,
+                        prediction_id TEXT NOT NULL,
+                        evaluated_at TEXT NOT NULL,
+                        actual_outcome INTEGER NOT NULL,
+                        accuracy_score REAL NOT NULL,
+                        notes TEXT,
+                        FOREIGN KEY (prediction_id) REFERENCES predictions(id) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_prediction_outcomes_prediction_id
+                        ON prediction_outcomes(prediction_id);
+
+                    CREATE TABLE IF NOT EXISTS weather_api_log (
+                        id TEXT PRIMARY KEY,
+                        timestamp TEXT NOT NULL,
+                        endpoint TEXT NOT NULL,
+                        success INTEGER NOT NULL,
+                        http_status INTEGER,
+                        latency_ms REAL,
+                        error_text TEXT
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_weather_api_log_time
+                        ON weather_api_log(timestamp DESC);
                     """
                 )
                 columns = {
@@ -313,6 +453,15 @@ class KnowledgeStore:
                         """,
                         (profile_key, DEFAULT_MODEL_NAMES[profile_key], now),
                     )
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO weather_settings (
+                        id, mode, country, cache_ttl_minutes, updated_at
+                    )
+                    VALUES ('default', ?, 'US', ?, ?)
+                    """,
+                    (DEFAULT_WEATHER_MODE, WEATHER_CACHE_TTL_MINUTES, now),
+                )
                 conn.commit()
 
     def _current_ts(self) -> str:
@@ -520,6 +669,659 @@ class KnowledgeStore:
                     runs.append(run_data)
 
                 return runs
+
+    def get_weather_settings(self) -> Dict[str, Any]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT id, mode, city, state, country, lat, lon, cache_ttl_minutes, updated_at
+                    FROM weather_settings
+                    WHERE id = 'default'
+                    """
+                ).fetchone()
+                if row is None:
+                    now = self._current_ts()
+                    conn.execute(
+                        """
+                        INSERT INTO weather_settings (
+                            id, mode, country, cache_ttl_minutes, updated_at
+                        ) VALUES ('default', ?, 'US', ?, ?)
+                        """,
+                        (DEFAULT_WEATHER_MODE, WEATHER_CACHE_TTL_MINUTES, now),
+                    )
+                    conn.commit()
+                    row = conn.execute(
+                        """
+                        SELECT id, mode, city, state, country, lat, lon, cache_ttl_minutes, updated_at
+                        FROM weather_settings
+                        WHERE id = 'default'
+                        """
+                    ).fetchone()
+
+                if row is None:
+                    return {
+                        "mode": DEFAULT_WEATHER_MODE,
+                        "location": None,
+                        "cache_ttl_minutes": WEATHER_CACHE_TTL_MINUTES,
+                        "updated_at": self._current_ts(),
+                    }
+
+                data = dict(row)
+                location = None
+                if data.get("lat") is not None and data.get("lon") is not None and data.get("city"):
+                    location = {
+                        "city": data["city"],
+                        "state": data.get("state"),
+                        "country": data.get("country") or "US",
+                        "lat": float(data["lat"]),
+                        "lon": float(data["lon"]),
+                    }
+
+                return {
+                    "mode": str(data.get("mode") or DEFAULT_WEATHER_MODE),
+                    "location": location,
+                    "cache_ttl_minutes": int(data.get("cache_ttl_minutes") or WEATHER_CACHE_TTL_MINUTES),
+                    "updated_at": str(data.get("updated_at") or self._current_ts()),
+                }
+
+    def set_weather_settings(
+        self,
+        *,
+        mode: str,
+        city: str,
+        state: Optional[str],
+        country: str,
+        lat: float,
+        lon: float,
+        cache_ttl_minutes: int = WEATHER_CACHE_TTL_MINUTES,
+    ) -> Dict[str, Any]:
+        now = self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO weather_settings (
+                        id, mode, city, state, country, lat, lon, cache_ttl_minutes, updated_at
+                    ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        mode = excluded.mode,
+                        city = excluded.city,
+                        state = excluded.state,
+                        country = excluded.country,
+                        lat = excluded.lat,
+                        lon = excluded.lon,
+                        cache_ttl_minutes = excluded.cache_ttl_minutes,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        mode.strip(),
+                        city.strip(),
+                        state.strip() if state else None,
+                        country.strip().upper(),
+                        float(lat),
+                        float(lon),
+                        int(cache_ttl_minutes),
+                        now,
+                    ),
+                )
+                conn.commit()
+
+        return self.get_weather_settings()
+
+    def has_cached_weather_data(self) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute("SELECT COUNT(*) AS count FROM weather_data").fetchone()
+                return int(row["count"]) > 0 if row else False
+
+    def get_last_weather_refresh_ts(self) -> Optional[str]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT MAX(fetched_at) AS latest FROM weather_data"
+                ).fetchone()
+                if not row:
+                    return None
+                latest = row["latest"]
+                return str(latest) if latest else None
+
+    def get_latest_weather_current(self, lat: float, lon: float) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM weather_data
+                    WHERE ABS(lat - ?) < 0.01 AND ABS(lon - ?) < 0.01
+                    ORDER BY fetched_at DESC
+                    LIMIT 1
+                    """,
+                    (lat, lon),
+                ).fetchone()
+                return dict(row) if row else None
+
+    def get_latest_weather_forecast(self, lat: float, lon: float) -> List[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                fetched_row = conn.execute(
+                    """
+                    SELECT fetched_at
+                    FROM forecasts
+                    WHERE ABS(lat - ?) < 0.01 AND ABS(lon - ?) < 0.01
+                    ORDER BY fetched_at DESC
+                    LIMIT 1
+                    """,
+                    (lat, lon),
+                ).fetchone()
+                if not fetched_row:
+                    return []
+
+                fetched_at = str(fetched_row["fetched_at"])
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM forecasts
+                    WHERE fetched_at = ? AND ABS(lat - ?) < 0.01 AND ABS(lon - ?) < 0.01
+                    ORDER BY forecast_ts ASC
+                    """,
+                    (fetched_at, lat, lon),
+                ).fetchall()
+                return [dict(row) for row in rows]
+
+    def get_latest_weather_alerts(self, lat: float, lon: float) -> List[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                fetched_row = conn.execute(
+                    """
+                    SELECT fetched_at
+                    FROM weather_alerts
+                    WHERE ABS(lat - ?) < 0.01 AND ABS(lon - ?) < 0.01
+                    ORDER BY fetched_at DESC
+                    LIMIT 1
+                    """,
+                    (lat, lon),
+                ).fetchone()
+                if not fetched_row:
+                    return []
+
+                fetched_at = str(fetched_row["fetched_at"])
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM weather_alerts
+                    WHERE fetched_at = ? AND ABS(lat - ?) < 0.01 AND ABS(lon - ?) < 0.01
+                    ORDER BY start_ts ASC
+                    """,
+                    (fetched_at, lat, lon),
+                ).fetchall()
+                return [dict(row) for row in rows]
+
+    def save_weather_snapshot(
+        self,
+        *,
+        lat: float,
+        lon: float,
+        current: Dict[str, Any],
+        forecast_points: List[Dict[str, Any]],
+        alerts: List[Dict[str, Any]],
+        fetched_at: Optional[str] = None,
+    ) -> str:
+        target_fetched_at = fetched_at or self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO weather_data (
+                        id, fetched_at, lat, lon, temp_f, feels_like_f, humidity_pct,
+                        wind_mph, wind_gust_mph, precip_in, condition_code, condition_main,
+                        condition_desc, raw_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()),
+                        target_fetched_at,
+                        float(lat),
+                        float(lon),
+                        current.get("temp_f"),
+                        current.get("feels_like_f"),
+                        current.get("humidity_pct"),
+                        current.get("wind_mph"),
+                        current.get("wind_gust_mph"),
+                        current.get("precip_in"),
+                        current.get("condition_code"),
+                        current.get("condition_main"),
+                        current.get("condition_desc"),
+                        json.dumps(current.get("raw_json", {})),
+                    ),
+                )
+
+                for point in forecast_points:
+                    conn.execute(
+                        """
+                        INSERT INTO forecasts (
+                            id, fetched_at, forecast_ts, lat, lon, temp_f, temp_min_f, temp_max_f,
+                            humidity_pct, wind_mph, precip_prob, precip_in, condition_code,
+                            condition_main, condition_desc, confidence_score, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(uuid4()),
+                            target_fetched_at,
+                            point.get("forecast_ts"),
+                            float(lat),
+                            float(lon),
+                            point.get("temp_f"),
+                            point.get("temp_min_f"),
+                            point.get("temp_max_f"),
+                            point.get("humidity_pct"),
+                            point.get("wind_mph"),
+                            point.get("precip_prob"),
+                            point.get("precip_in"),
+                            point.get("condition_code"),
+                            point.get("condition_main"),
+                            point.get("condition_desc"),
+                            point.get("confidence_score"),
+                            json.dumps(point.get("raw_json", {})),
+                        ),
+                    )
+
+                for alert in alerts:
+                    conn.execute(
+                        """
+                        INSERT INTO weather_alerts (
+                            id, fetched_at, lat, lon, event, severity, sender_name,
+                            start_ts, end_ts, description, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(uuid4()),
+                            target_fetched_at,
+                            float(lat),
+                            float(lon),
+                            alert.get("event"),
+                            alert.get("severity"),
+                            alert.get("sender_name"),
+                            alert.get("start_ts"),
+                            alert.get("end_ts"),
+                            alert.get("description"),
+                            json.dumps(alert.get("raw_json", {})),
+                        ),
+                    )
+
+                conn.commit()
+        return target_fetched_at
+
+    def save_current_weather(
+        self,
+        *,
+        lat: float,
+        lon: float,
+        current: Dict[str, Any],
+        fetched_at: Optional[str] = None,
+    ) -> str:
+        target_fetched_at = fetched_at or self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO weather_data (
+                        id, fetched_at, lat, lon, temp_f, feels_like_f, humidity_pct,
+                        wind_mph, wind_gust_mph, precip_in, condition_code, condition_main,
+                        condition_desc, raw_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()),
+                        target_fetched_at,
+                        float(lat),
+                        float(lon),
+                        current.get("temp_f"),
+                        current.get("feels_like_f"),
+                        current.get("humidity_pct"),
+                        current.get("wind_mph"),
+                        current.get("wind_gust_mph"),
+                        current.get("precip_in"),
+                        current.get("condition_code"),
+                        current.get("condition_main"),
+                        current.get("condition_desc"),
+                        json.dumps(current.get("raw_json", {})),
+                    ),
+                )
+                conn.commit()
+        return target_fetched_at
+
+    def save_forecast_weather(
+        self,
+        *,
+        lat: float,
+        lon: float,
+        forecast_points: List[Dict[str, Any]],
+        fetched_at: Optional[str] = None,
+    ) -> str:
+        target_fetched_at = fetched_at or self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                for point in forecast_points:
+                    conn.execute(
+                        """
+                        INSERT INTO forecasts (
+                            id, fetched_at, forecast_ts, lat, lon, temp_f, temp_min_f, temp_max_f,
+                            humidity_pct, wind_mph, precip_prob, precip_in, condition_code,
+                            condition_main, condition_desc, confidence_score, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(uuid4()),
+                            target_fetched_at,
+                            point.get("forecast_ts"),
+                            float(lat),
+                            float(lon),
+                            point.get("temp_f"),
+                            point.get("temp_min_f"),
+                            point.get("temp_max_f"),
+                            point.get("humidity_pct"),
+                            point.get("wind_mph"),
+                            point.get("precip_prob"),
+                            point.get("precip_in"),
+                            point.get("condition_code"),
+                            point.get("condition_main"),
+                            point.get("condition_desc"),
+                            point.get("confidence_score"),
+                            json.dumps(point.get("raw_json", {})),
+                        ),
+                    )
+                conn.commit()
+        return target_fetched_at
+
+    def save_weather_alerts(
+        self,
+        *,
+        lat: float,
+        lon: float,
+        alerts: List[Dict[str, Any]],
+        fetched_at: Optional[str] = None,
+    ) -> str:
+        target_fetched_at = fetched_at or self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                for alert in alerts:
+                    conn.execute(
+                        """
+                        INSERT INTO weather_alerts (
+                            id, fetched_at, lat, lon, event, severity, sender_name,
+                            start_ts, end_ts, description, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(uuid4()),
+                            target_fetched_at,
+                            float(lat),
+                            float(lon),
+                            alert.get("event"),
+                            alert.get("severity"),
+                            alert.get("sender_name"),
+                            alert.get("start_ts"),
+                            alert.get("end_ts"),
+                            alert.get("description"),
+                            json.dumps(alert.get("raw_json", {})),
+                        ),
+                    )
+                conn.commit()
+        return target_fetched_at
+
+    def log_weather_api_call(
+        self,
+        *,
+        endpoint: str,
+        success: bool,
+        http_status: Optional[int],
+        latency_ms: Optional[float],
+        error_text: Optional[str] = None,
+    ) -> None:
+        now = self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO weather_api_log (
+                        id, timestamp, endpoint, success, http_status, latency_ms, error_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()),
+                        now,
+                        endpoint,
+                        1 if success else 0,
+                        http_status,
+                        latency_ms,
+                        error_text,
+                    ),
+                )
+                conn.commit()
+
+    def get_weather_api_reliability(self, sample_size: int = 120) -> float:
+        safe_size = max(1, min(sample_size, 500))
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT success
+                    FROM weather_api_log
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                    """,
+                    (safe_size,),
+                ).fetchall()
+                if not rows:
+                    return 1.0
+
+                success_total = sum(int(row["success"]) for row in rows)
+                return success_total / max(len(rows), 1)
+
+    def get_latest_weather_api_failure(self) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT endpoint, http_status, error_text, timestamp
+                    FROM weather_api_log
+                    WHERE success = 0
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                return dict(row) if row else None
+
+    def get_latest_weather_api_event(self) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT endpoint, success, http_status, error_text, timestamp
+                    FROM weather_api_log
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                return dict(row) if row else None
+
+    def save_predictions(
+        self,
+        *,
+        mode: str,
+        integrity: float,
+        resilience: float,
+        meaning: float,
+        cci_score: float,
+        predictions: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        now = self._current_ts()
+        saved: List[Dict[str, Any]] = []
+        with self._lock:
+            with self._connect() as conn:
+                for item in predictions:
+                    prediction_id = str(uuid4())
+                    factors = item.get("factors") or {}
+                    conn.execute(
+                        """
+                        INSERT INTO predictions (
+                            id, created_at, mode, target_date, integrity, resilience, meaning,
+                            cci_score, probability, prediction_text, factors_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            prediction_id,
+                            now,
+                            mode,
+                            item["target_date"],
+                            integrity,
+                            resilience,
+                            meaning,
+                            cci_score,
+                            item["probability"],
+                            item["prediction_text"],
+                            json.dumps(factors),
+                        ),
+                    )
+                    saved.append(
+                        {
+                            "id": prediction_id,
+                            "created_at": now,
+                            "mode": mode,
+                            "target_date": item["target_date"],
+                            "integrity": integrity,
+                            "resilience": resilience,
+                            "meaning": meaning,
+                            "cci_score": cci_score,
+                            "probability": item["probability"],
+                            "prediction_text": item["prediction_text"],
+                            "factors": factors,
+                        }
+                    )
+                conn.commit()
+        return saved
+
+    def list_predictions(
+        self,
+        *,
+        mode: str,
+        date_from: str,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(1, min(limit, 100))
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        p.id,
+                        p.created_at,
+                        p.mode,
+                        p.target_date,
+                        p.integrity,
+                        p.resilience,
+                        p.meaning,
+                        p.cci_score,
+                        p.probability,
+                        p.prediction_text,
+                        p.factors_json,
+                        o.actual_outcome,
+                        o.accuracy_score,
+                        o.evaluated_at
+                    FROM predictions p
+                    LEFT JOIN prediction_outcomes o ON o.prediction_id = p.id
+                    WHERE p.mode = ? AND p.target_date >= ?
+                    ORDER BY p.target_date ASC, p.created_at DESC
+                    LIMIT ?
+                    """,
+                    (mode, date_from, safe_limit),
+                ).fetchall()
+
+                data: List[Dict[str, Any]] = []
+                for row in rows:
+                    item = dict(row)
+                    try:
+                        item["factors"] = json.loads(item.pop("factors_json") or "{}")
+                    except Exception:
+                        item["factors"] = {}
+                    data.append(item)
+                return data
+
+    def list_mature_predictions_without_outcome(self, date_before: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT p.id, p.mode, p.target_date, p.probability, p.factors_json
+                    FROM predictions p
+                    LEFT JOIN prediction_outcomes o ON o.prediction_id = p.id
+                    WHERE o.id IS NULL AND p.target_date < ?
+                    ORDER BY p.target_date ASC
+                    """,
+                    (date_before,),
+                ).fetchall()
+                results: List[Dict[str, Any]] = []
+                for row in rows:
+                    item = dict(row)
+                    try:
+                        item["factors"] = json.loads(item.pop("factors_json") or "{}")
+                    except Exception:
+                        item["factors"] = {}
+                    results.append(item)
+                return results
+
+    def save_prediction_outcome(
+        self,
+        *,
+        prediction_id: str,
+        actual_outcome: bool,
+        accuracy_score: float,
+        notes: Optional[str] = None,
+    ) -> None:
+        now = self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO prediction_outcomes (
+                        id, prediction_id, evaluated_at, actual_outcome, accuracy_score, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()),
+                        prediction_id,
+                        now,
+                        1 if actual_outcome else 0,
+                        accuracy_score,
+                        notes,
+                    ),
+                )
+                conn.commit()
+
+    def list_prediction_accuracy(self, mode: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT p.factors_json, o.accuracy_score
+                    FROM prediction_outcomes o
+                    JOIN predictions p ON p.id = o.prediction_id
+                    WHERE p.mode = ?
+                    ORDER BY o.evaluated_at DESC
+                    LIMIT 300
+                    """,
+                    (mode,),
+                ).fetchall()
+                results: List[Dict[str, Any]] = []
+                for row in rows:
+                    item = dict(row)
+                    try:
+                        item["factors"] = json.loads(item.pop("factors_json") or "{}")
+                    except Exception:
+                        item["factors"] = {}
+                    results.append(item)
+                return results
 
     def get_document_by_hash(self, content_hash: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -1251,6 +2053,19 @@ PROMPTS_DIR = Path(__file__).parent / "prompts"
 BASE_PROMPT = ""
 MODE_PROMPTS: Dict[str, str] = {}
 KNOWLEDGE_STORE: Optional[KnowledgeStore] = None
+ENV_LOADED = False
+
+
+class WeatherConfigError(RuntimeError):
+    pass
+
+
+class WeatherAuthError(RuntimeError):
+    pass
+
+
+class WeatherAPIError(RuntimeError):
+    pass
 
 
 def resolve_data_dir() -> Path:
@@ -1260,11 +2075,1191 @@ def resolve_data_dir() -> Path:
     return (Path.home() / ".vesta").resolve()
 
 
+def load_vesta_env() -> None:
+    global ENV_LOADED
+    if ENV_LOADED:
+        return
+
+    env_override = os.getenv("VESTA_ENV_FILE")
+
+    # 1) Explicit override path, if provided.
+    if env_override:
+        override_path = Path(env_override).expanduser().resolve()
+        if override_path.exists() and override_path.is_file():
+            load_dotenv(override_path, override=False)
+
+    # 2) Data-dir env file.
+    data_dir_env = resolve_data_dir() / ".env"
+    if data_dir_env.exists() and data_dir_env.is_file():
+        load_dotenv(data_dir_env, override=False)
+
+    # 3) Local cwd fallback.
+    cwd_env = (Path.cwd() / ".env").resolve()
+    if cwd_env.exists() and cwd_env.is_file():
+        load_dotenv(cwd_env, override=False)
+
+    ENV_LOADED = True
+
+
 def get_knowledge_store() -> KnowledgeStore:
     global KNOWLEDGE_STORE
     if KNOWLEDGE_STORE is None:
         KNOWLEDGE_STORE = KnowledgeStore(resolve_data_dir())
     return KNOWLEDGE_STORE
+
+
+def get_openweather_api_key() -> Optional[str]:
+    load_vesta_env()
+    api_key = os.getenv("OPENWEATHER_API_KEY", "").strip()
+    return api_key or None
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def day_key_from_epoch(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+
+
+def parse_int_timestamp(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(str(value))
+    except Exception:
+        return None
+
+
+def is_weather_intent(message: str) -> bool:
+    if not message.strip():
+        return False
+    return WEATHER_INTENT_PATTERN.search(message) is not None
+
+
+def clamp_score(value: float, min_value: float = 0.0, max_value: float = 100.0) -> float:
+    return max(min_value, min(max_value, value))
+
+
+def normalize_weather_mode(mode: Optional[str]) -> str:
+    normalized = (mode or DEFAULT_WEATHER_MODE).strip().lower()
+    return normalized if normalized in WEATHER_MODE_OPTIONS else DEFAULT_WEATHER_MODE
+
+
+def normalize_country_code(country: Optional[str]) -> str:
+    raw = (country or "US").strip().upper()
+    if not raw:
+        return "US"
+    return raw[:3]
+
+
+def make_weather_bucket(temp_f: float, wind_mph: float, precip_in: float) -> str:
+    if temp_f < 45:
+        temp_bin = "cold"
+    elif temp_f > 85:
+        temp_bin = "hot"
+    else:
+        temp_bin = "mild"
+
+    if wind_mph < 10:
+        wind_bin = "calm"
+    elif wind_mph < 20:
+        wind_bin = "breezy"
+    else:
+        wind_bin = "windy"
+
+    precip_bin = "wet" if precip_in >= 0.1 else "dry"
+    return f"{temp_bin}:{wind_bin}:{precip_bin}"
+
+
+def normalize_current_weather(payload: Dict[str, Any]) -> Dict[str, Any]:
+    main = payload.get("main") if isinstance(payload.get("main"), dict) else {}
+    wind = payload.get("wind") if isinstance(payload.get("wind"), dict) else {}
+    rain = payload.get("rain") if isinstance(payload.get("rain"), dict) else {}
+    snow = payload.get("snow") if isinstance(payload.get("snow"), dict) else {}
+    weather_items = payload.get("weather") if isinstance(payload.get("weather"), list) else []
+    weather_head = weather_items[0] if weather_items and isinstance(weather_items[0], dict) else {}
+
+    precip = 0.0
+    if rain:
+        precip += float(rain.get("1h") or 0.0)
+    if snow:
+        precip += float(snow.get("1h") or 0.0)
+
+    return {
+        "observed_ts": int(payload.get("dt") or time.time()),
+        "temp_f": float(main.get("temp")) if main.get("temp") is not None else None,
+        "feels_like_f": float(main.get("feels_like"))
+        if main.get("feels_like") is not None
+        else None,
+        "humidity_pct": float(main.get("humidity"))
+        if main.get("humidity") is not None
+        else None,
+        "wind_mph": float(wind.get("speed")) if wind.get("speed") is not None else None,
+        "wind_gust_mph": float(wind.get("gust")) if wind.get("gust") is not None else None,
+        "precip_in": precip,
+        "condition_code": int(weather_head.get("id")) if weather_head.get("id") is not None else None,
+        "condition_main": weather_head.get("main"),
+        "condition_desc": weather_head.get("description"),
+        "raw_json": payload,
+    }
+
+
+def normalize_forecast_points(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    items = payload.get("list") if isinstance(payload.get("list"), list) else []
+    points: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        main = item.get("main") if isinstance(item.get("main"), dict) else {}
+        wind = item.get("wind") if isinstance(item.get("wind"), dict) else {}
+        rain = item.get("rain") if isinstance(item.get("rain"), dict) else {}
+        snow = item.get("snow") if isinstance(item.get("snow"), dict) else {}
+        weather_items = item.get("weather") if isinstance(item.get("weather"), list) else []
+        weather_head = weather_items[0] if weather_items and isinstance(weather_items[0], dict) else {}
+
+        precip = 0.0
+        if rain:
+            precip += float(rain.get("3h") or rain.get("1h") or 0.0)
+        if snow:
+            precip += float(snow.get("3h") or snow.get("1h") or 0.0)
+
+        forecast_ts = int(item.get("dt") or time.time())
+        hours_out = max((forecast_ts - int(time.time())) / 3600.0, 0.0)
+        horizon_decay = max(0.0, 1.0 - (hours_out / 120.0))
+        confidence = clamp_score(horizon_decay * 100.0) / 100.0
+
+        points.append(
+            {
+                "forecast_ts": str(forecast_ts),
+                "temp_f": float(main.get("temp")) if main.get("temp") is not None else None,
+                "temp_min_f": float(main.get("temp_min"))
+                if main.get("temp_min") is not None
+                else None,
+                "temp_max_f": float(main.get("temp_max"))
+                if main.get("temp_max") is not None
+                else None,
+                "humidity_pct": float(main.get("humidity"))
+                if main.get("humidity") is not None
+                else None,
+                "wind_mph": float(wind.get("speed")) if wind.get("speed") is not None else None,
+                "precip_prob": float(item.get("pop")) if item.get("pop") is not None else 0.0,
+                "precip_in": precip,
+                "condition_code": int(weather_head.get("id"))
+                if weather_head.get("id") is not None
+                else None,
+                "condition_main": weather_head.get("main"),
+                "condition_desc": weather_head.get("description"),
+                "confidence_score": confidence,
+                "raw_json": item,
+            }
+        )
+
+    return points
+
+
+def normalize_alerts(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    alerts = payload.get("alerts")
+    if not isinstance(alerts, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for item in alerts:
+        if not isinstance(item, dict):
+            continue
+        normalized.append(
+            {
+                "event": item.get("event"),
+                "severity": item.get("severity"),
+                "sender_name": item.get("sender_name"),
+                "start_ts": str(item.get("start")) if item.get("start") is not None else None,
+                "end_ts": str(item.get("end")) if item.get("end") is not None else None,
+                "description": item.get("description"),
+                "raw_json": item,
+            }
+        )
+    return normalized
+
+
+def summarize_daily_forecast(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for point in points:
+        ts = parse_int_timestamp(point.get("forecast_ts"))
+        if ts is None:
+            continue
+        grouped[day_key_from_epoch(ts)].append(point)
+
+    daily: List[Dict[str, Any]] = []
+    for date_key in sorted(grouped.keys())[:5]:
+        rows = grouped[date_key]
+        temps = [float(row["temp_f"]) for row in rows if row.get("temp_f") is not None]
+        winds = [float(row["wind_mph"]) for row in rows if row.get("wind_mph") is not None]
+        pops = [float(row.get("precip_prob") or 0.0) for row in rows]
+        precips = [float(row.get("precip_in") or 0.0) for row in rows]
+        confidences = [float(row.get("confidence_score") or 0.0) for row in rows]
+        first = rows[0]
+
+        daily.append(
+            {
+                "date": date_key,
+                "temp_min_f": min(temps) if temps else None,
+                "temp_max_f": max(temps) if temps else None,
+                "temp_avg_f": sum(temps) / len(temps) if temps else None,
+                "wind_max_mph": max(winds) if winds else None,
+                "precip_total_in": sum(precips),
+                "precip_prob_avg": sum(pops) / len(pops) if pops else 0.0,
+                "confidence_score": sum(confidences) / len(confidences) if confidences else 0.0,
+                "condition_main": first.get("condition_main"),
+                "condition_desc": first.get("condition_desc"),
+            }
+        )
+    return daily
+
+
+def hydrate_forecast_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    points: List[Dict[str, Any]] = []
+    for row in rows:
+        points.append(
+            {
+                "forecast_ts": row.get("forecast_ts"),
+                "temp_f": row.get("temp_f"),
+                "temp_min_f": row.get("temp_min_f"),
+                "temp_max_f": row.get("temp_max_f"),
+                "humidity_pct": row.get("humidity_pct"),
+                "wind_mph": row.get("wind_mph"),
+                "precip_prob": row.get("precip_prob"),
+                "precip_in": row.get("precip_in"),
+                "condition_code": row.get("condition_code"),
+                "condition_main": row.get("condition_main"),
+                "condition_desc": row.get("condition_desc"),
+                "confidence_score": row.get("confidence_score"),
+            }
+        )
+    return points
+
+
+def cache_age_seconds(last_refresh_ts: Optional[str]) -> Optional[int]:
+    latest = parse_int_timestamp(last_refresh_ts)
+    if latest is None:
+        return None
+    age = int(time.time()) - latest
+    return max(age, 0)
+
+
+def is_cache_stale(last_refresh_ts: Optional[str], ttl_minutes: int) -> bool:
+    age = cache_age_seconds(last_refresh_ts)
+    if age is None:
+        return True
+    return age > int(ttl_minutes * 60)
+
+
+async def call_openweather_json(
+    *,
+    url: str,
+    endpoint_name: str,
+    params: Dict[str, Any],
+    include_units: bool = True,
+    expect_list: bool = False,
+) -> Any:
+    api_key = get_openweather_api_key()
+    if not api_key:
+        raise WeatherConfigError("OpenWeather API key is not configured.")
+
+    request_params = {key: value for key, value in params.items() if value is not None}
+    request_params["appid"] = api_key
+    if include_units and "units" not in request_params:
+        request_params["units"] = "imperial"
+
+    store = get_knowledge_store()
+    start = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(url, params=request_params)
+        latency_ms = (time.time() - start) * 1000
+
+        if response.status_code == 401:
+            error_text = response.text[:500]
+            store.log_weather_api_call(
+                endpoint=endpoint_name,
+                success=False,
+                http_status=401,
+                latency_ms=latency_ms,
+                error_text=error_text,
+            )
+
+            lowered = error_text.lower()
+            if endpoint_name == "alerts" and (
+                "one call 3.0 requires a separate subscription" in lowered
+                or "one call by call plan" in lowered
+            ):
+                raise WeatherAPIError(
+                    "OpenWeather One Call 3.0 subscription is required for alerts."
+                )
+
+            raise WeatherAuthError("OpenWeather API key is invalid.")
+
+        if response.status_code >= 400:
+            store.log_weather_api_call(
+                endpoint=endpoint_name,
+                success=False,
+                http_status=response.status_code,
+                latency_ms=latency_ms,
+                error_text=response.text[:500],
+            )
+            raise WeatherAPIError(
+                f"OpenWeather request failed for {endpoint_name}: status {response.status_code}"
+            )
+
+        payload = response.json()
+        store.log_weather_api_call(
+            endpoint=endpoint_name,
+            success=True,
+            http_status=response.status_code,
+            latency_ms=latency_ms,
+            error_text=None,
+        )
+        if expect_list:
+            if not isinstance(payload, list):
+                raise WeatherAPIError("OpenWeather payload was not a JSON array.")
+        elif not isinstance(payload, dict):
+            raise WeatherAPIError("OpenWeather payload was not a JSON object.")
+        return payload
+    except WeatherAuthError:
+        raise
+    except WeatherConfigError:
+        raise
+    except WeatherAPIError:
+        raise
+    except Exception as error:
+        latency_ms = (time.time() - start) * 1000
+        store.log_weather_api_call(
+            endpoint=endpoint_name,
+            success=False,
+            http_status=None,
+            latency_ms=latency_ms,
+            error_text=str(error),
+        )
+        raise WeatherAPIError(str(error))
+
+
+async def fetch_openweather_current(lat: float, lon: float) -> Dict[str, Any]:
+    payload = await call_openweather_json(
+        url=OPENWEATHER_CURRENT_URL,
+        endpoint_name="current",
+        params={"lat": lat, "lon": lon},
+    )
+    return normalize_current_weather(payload)
+
+
+async def fetch_openweather_forecast(lat: float, lon: float) -> List[Dict[str, Any]]:
+    payload = await call_openweather_json(
+        url=OPENWEATHER_FORECAST_URL,
+        endpoint_name="forecast",
+        params={"lat": lat, "lon": lon},
+    )
+    return normalize_forecast_points(payload)
+
+
+async def fetch_openweather_alerts(lat: float, lon: float) -> List[Dict[str, Any]]:
+    payload = await call_openweather_json(
+        url=OPENWEATHER_ONECALL_URL,
+        endpoint_name="alerts",
+        params={"lat": lat, "lon": lon, "exclude": "minutely,hourly,daily,current"},
+    )
+    return normalize_alerts(payload)
+
+
+async def resolve_openweather_location(
+    *,
+    city: str,
+    state: Optional[str],
+    country: str,
+) -> List[Dict[str, Any]]:
+    query_parts = [city.strip()]
+    if state and state.strip():
+        query_parts.append(state.strip())
+    if country.strip():
+        query_parts.append(country.strip().upper())
+    query = ",".join(query_parts)
+
+    payload = await call_openweather_json(
+        url=OPENWEATHER_GEOCODE_URL,
+        endpoint_name="geocode",
+        params={"q": query, "limit": 5},
+        include_units=False,
+        expect_list=True,
+    )
+    if not isinstance(payload, list):
+        return []
+
+    results: List[Dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        if item.get("lat") is None or item.get("lon") is None:
+            continue
+        results.append(
+            {
+                "name": str(item.get("name") or city).strip(),
+                "state": str(item.get("state") or "").strip() or None,
+                "country": str(item.get("country") or country).strip().upper(),
+                "lat": float(item["lat"]),
+                "lon": float(item["lon"]),
+            }
+        )
+    return results
+
+
+def normalize_current_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not row:
+        return None
+    return {
+        "observed_ts": parse_int_timestamp(row.get("fetched_at")) or int(time.time()),
+        "temp_f": row.get("temp_f"),
+        "feels_like_f": row.get("feels_like_f"),
+        "humidity_pct": row.get("humidity_pct"),
+        "wind_mph": row.get("wind_mph"),
+        "wind_gust_mph": row.get("wind_gust_mph"),
+        "precip_in": row.get("precip_in") or 0.0,
+        "condition_code": row.get("condition_code"),
+        "condition_main": row.get("condition_main"),
+        "condition_desc": row.get("condition_desc"),
+    }
+
+
+def normalize_alert_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    alerts: List[Dict[str, Any]] = []
+    for row in rows:
+        alerts.append(
+            {
+                "event": row.get("event"),
+                "severity": row.get("severity"),
+                "sender_name": row.get("sender_name"),
+                "start_ts": row.get("start_ts"),
+                "end_ts": row.get("end_ts"),
+                "description": row.get("description"),
+            }
+        )
+    return alerts
+
+
+def latest_weather_fetched_ts(
+    current_row: Optional[Dict[str, Any]],
+    forecast_rows: List[Dict[str, Any]],
+    alert_rows: List[Dict[str, Any]],
+) -> Optional[str]:
+    candidates: List[str] = []
+    if current_row and current_row.get("fetched_at"):
+        candidates.append(str(current_row["fetched_at"]))
+    if forecast_rows and forecast_rows[0].get("fetched_at"):
+        candidates.append(str(forecast_rows[0]["fetched_at"]))
+    if alert_rows and alert_rows[0].get("fetched_at"):
+        candidates.append(str(alert_rows[0]["fetched_at"]))
+    if not candidates:
+        return None
+    return max(candidates)
+
+
+def get_cached_weather_bundle(lat: float, lon: float) -> Dict[str, Any]:
+    store = get_knowledge_store()
+    current_row = store.get_latest_weather_current(lat, lon)
+    forecast_rows = store.get_latest_weather_forecast(lat, lon)
+    alert_rows = store.get_latest_weather_alerts(lat, lon)
+    fetched_at = latest_weather_fetched_ts(current_row, forecast_rows, alert_rows)
+
+    return {
+        "current": normalize_current_row(current_row),
+        "forecast_3h": hydrate_forecast_rows(forecast_rows),
+        "forecast_daily": summarize_daily_forecast(hydrate_forecast_rows(forecast_rows)),
+        "alerts": normalize_alert_rows(alert_rows),
+        "last_refresh_ts": fetched_at,
+    }
+
+
+def calculate_data_completeness(
+    current: Optional[Dict[str, Any]],
+    forecast_points: List[Dict[str, Any]],
+) -> float:
+    required_current = [
+        current.get("temp_f") if current else None,
+        current.get("humidity_pct") if current else None,
+        current.get("wind_mph") if current else None,
+        current.get("condition_code") if current else None,
+    ]
+    current_score = sum(1 for value in required_current if value is not None) / max(
+        len(required_current), 1
+    )
+    forecast_score = 1.0 if forecast_points else 0.0
+    return max(0.0, min(1.0, (current_score * 0.7) + (forecast_score * 0.3)))
+
+
+def calculate_forecast_confidence(forecast_points: List[Dict[str, Any]]) -> float:
+    if not forecast_points:
+        return 0.0
+
+    now_epoch = int(time.time())
+    values: List[float] = []
+    for point in forecast_points:
+        ts = parse_int_timestamp(point.get("forecast_ts"))
+        if ts is None:
+            continue
+        hours_out = max((ts - now_epoch) / 3600.0, 0.0)
+        horizon_decay = max(0.0, 1.0 - (hours_out / 120.0))
+        confidence = point.get("confidence_score")
+        if confidence is None:
+            confidence = horizon_decay
+        values.append(max(0.0, min(1.0, float(confidence))))
+
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def calculate_integrity_score(
+    *,
+    forecast_points: List[Dict[str, Any]],
+    current: Optional[Dict[str, Any]],
+    api_reliability: float,
+) -> float:
+    forecast_confidence = calculate_forecast_confidence(forecast_points)
+    completeness = calculate_data_completeness(current, forecast_points)
+    integrity = 100.0 * (
+        (forecast_confidence * 0.4) + (completeness * 0.3) + (api_reliability * 0.3)
+    )
+    return round(clamp_score(integrity), 2)
+
+
+def calculate_mode_meaning_score(
+    *,
+    mode: str,
+    current: Optional[Dict[str, Any]],
+    forecast_daily: List[Dict[str, Any]],
+    alerts: List[Dict[str, Any]],
+) -> float:
+    mode_key = normalize_weather_mode(mode)
+    first_day = forecast_daily[0] if forecast_daily else {}
+    temp = float(first_day.get("temp_avg_f") or current.get("temp_f") or 70.0) if current else float(first_day.get("temp_avg_f") or 70.0)
+    wind = float(first_day.get("wind_max_mph") or current.get("wind_mph") or 0.0) if current else float(first_day.get("wind_max_mph") or 0.0)
+    precip = float(first_day.get("precip_total_in") or current.get("precip_in") or 0.0) if current else float(first_day.get("precip_total_in") or 0.0)
+
+    alert_text = " ".join(
+        f"{item.get('event', '')} {item.get('description', '')}".lower() for item in alerts
+    )
+    hail_signal = 1.0 if ("hail" in alert_text or "thunderstorm" in alert_text) else 0.0
+
+    if mode_key == "storm_damage":
+        wind_score = max(0.0, min(1.0, wind / 45.0))
+        precip_score = max(0.0, min(1.0, precip / 1.0))
+        score = (wind_score * 0.4) + (precip_score * 0.3) + (hail_signal * 0.3)
+        return round(clamp_score(score * 100.0), 2)
+
+    if mode_key == "lawn_care":
+        precip_balance = max(0.0, 1.0 - min(abs(precip - 0.2) / 0.25, 1.0))
+        moisture_estimate = max(0.0, min(1.0, precip / 0.6))
+        temp_ideal = max(0.0, 1.0 - min(abs(temp - 72.0) / 25.0, 1.0))
+        score = (precip_balance * 0.35) + (moisture_estimate * 0.25) + (temp_ideal * 0.4)
+        return round(clamp_score(score * 100.0), 2)
+
+    if mode_key == "construction":
+        precip_disrupt = max(0.0, min(1.0, precip / 0.35))
+        wind_disrupt = max(0.0, min(1.0, wind / 28.0))
+        temp_disrupt = max(0.0, min(1.0, abs(temp - 68.0) / 35.0))
+        score = (precip_disrupt * 0.4) + (wind_disrupt * 0.3) + (temp_disrupt * 0.3)
+        return round(clamp_score(score * 100.0), 2)
+
+    # general
+    precip_signal = max(0.0, min(1.0, precip / 0.4))
+    wind_signal = max(0.0, min(1.0, wind / 30.0))
+    temp_signal = max(0.0, min(1.0, abs(temp - 70.0) / 30.0))
+    score = (precip_signal * 0.35) + (wind_signal * 0.3) + (temp_signal * 0.35)
+    return round(clamp_score(score * 100.0), 2)
+
+
+def calculate_resilience_score(
+    *,
+    mode: str,
+    forecast_daily: List[Dict[str, Any]],
+) -> float:
+    store = get_knowledge_store()
+    history = store.list_prediction_accuracy(normalize_weather_mode(mode))
+    if not history:
+        return 65.0
+
+    day = forecast_daily[0] if forecast_daily else {}
+    temp = float(day.get("temp_avg_f") or 70.0)
+    wind = float(day.get("wind_max_mph") or 0.0)
+    precip = float(day.get("precip_total_in") or 0.0)
+    target_bucket = make_weather_bucket(temp, wind, precip)
+
+    bucket_scores: List[float] = []
+    overall_scores: List[float] = []
+    for item in history:
+        score = item.get("accuracy_score")
+        if score is None:
+            continue
+        score_value = float(score)
+        overall_scores.append(score_value)
+        factors = item.get("factors") if isinstance(item.get("factors"), dict) else {}
+        if factors.get("bucket") == target_bucket:
+            bucket_scores.append(score_value)
+
+    if bucket_scores:
+        return round(clamp_score((sum(bucket_scores) / len(bucket_scores)) * 100.0), 2)
+    if overall_scores:
+        return round(clamp_score((sum(overall_scores) / len(overall_scores)) * 100.0), 2)
+    return 65.0
+
+
+def calculate_cci(
+    *,
+    mode: str,
+    integrity: float,
+    resilience: float,
+    meaning: float,
+) -> float:
+    mode_key = normalize_weather_mode(mode)
+    if mode_key == "storm_damage":
+        value = (integrity * 0.25) + (resilience * 0.30) + (meaning * 0.45)
+    elif mode_key == "lawn_care":
+        value = (integrity * 0.30) + (resilience * 0.30) + (meaning * 0.40)
+    elif mode_key == "construction":
+        value = (integrity * 0.30) + (resilience * 0.35) + (meaning * 0.35)
+    else:
+        value = (integrity * 0.34) + (resilience * 0.33) + (meaning * 0.33)
+    return round(clamp_score(value), 2)
+
+
+def calculate_coherence_scores(
+    *,
+    mode: str,
+    current: Optional[Dict[str, Any]],
+    forecast_points: List[Dict[str, Any]],
+    forecast_daily: List[Dict[str, Any]],
+    alerts: List[Dict[str, Any]],
+) -> Dict[str, float]:
+    store = get_knowledge_store()
+    api_reliability = store.get_weather_api_reliability()
+    integrity = calculate_integrity_score(
+        forecast_points=forecast_points,
+        current=current,
+        api_reliability=api_reliability,
+    )
+    resilience = calculate_resilience_score(mode=mode, forecast_daily=forecast_daily)
+    meaning = calculate_mode_meaning_score(
+        mode=mode,
+        current=current,
+        forecast_daily=forecast_daily,
+        alerts=alerts,
+    )
+    cci = calculate_cci(mode=mode, integrity=integrity, resilience=resilience, meaning=meaning)
+    return {
+        "integrity": integrity,
+        "resilience": resilience,
+        "meaning": meaning,
+        "cci": cci,
+    }
+
+
+def generate_mode_prediction(
+    *,
+    mode: str,
+    day: Dict[str, Any],
+    day_offset: int,
+) -> Dict[str, Any]:
+    temp = float(day.get("temp_avg_f") or 70.0)
+    wind = float(day.get("wind_max_mph") or 0.0)
+    precip = float(day.get("precip_total_in") or 0.0)
+    confidence = float(day.get("confidence_score") or 0.6)
+    mode_key = normalize_weather_mode(mode)
+
+    if mode_key == "storm_damage":
+        probability = min(100.0, ((wind / 45.0) * 45.0) + ((precip / 1.0) * 35.0) + 10.0)
+        text = f"{probability:.0f}% probability of storm damage opportunity in {day_offset} day(s)"
+    elif mode_key == "lawn_care":
+        temp_fit = max(0.0, 1.0 - min(abs(temp - 72.0) / 22.0, 1.0))
+        rain_fit = max(0.0, 1.0 - min(abs(precip - 0.2) / 0.3, 1.0))
+        probability = min(100.0, (temp_fit * 60.0) + (rain_fit * 40.0))
+        text = f"{probability:.0f}% probability of optimal lawn care window in {day_offset} day(s)"
+    elif mode_key == "construction":
+        disruption = min(1.0, (precip / 0.35) * 0.45 + (wind / 28.0) * 0.35 + (abs(temp - 68.0) / 35.0) * 0.2)
+        probability = disruption * 100.0
+        text = f"{probability:.0f}% probability of construction delay in {day_offset} day(s)"
+    else:
+        shift = min(1.0, (abs(temp - 70.0) / 30.0) * 0.4 + (precip / 0.4) * 0.35 + (wind / 30.0) * 0.25)
+        probability = shift * 100.0
+        text = f"{probability:.0f}% probability of notable weather shift in {day_offset} day(s)"
+
+    probability = round(clamp_score(probability * confidence), 2)
+    bucket = make_weather_bucket(temp, wind, precip)
+    return {
+        "target_date": day["date"],
+        "probability": probability,
+        "prediction_text": text,
+        "factors": {
+            "bucket": bucket,
+            "temp_f": temp,
+            "wind_mph": wind,
+            "precip_in": precip,
+            "confidence": confidence,
+        },
+    }
+
+
+def generate_predictions(
+    *,
+    mode: str,
+    forecast_daily: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    for index, day in enumerate(forecast_daily[:5]):
+        results.append(
+            generate_mode_prediction(
+                mode=mode,
+                day=day,
+                day_offset=index + 1,
+            )
+        )
+    return results
+
+
+def did_prediction_outcome_happen(mode: str, factors: Dict[str, Any]) -> bool:
+    mode_key = normalize_weather_mode(mode)
+    temp = float(factors.get("temp_f") or 70.0)
+    wind = float(factors.get("wind_mph") or 0.0)
+    precip = float(factors.get("precip_in") or 0.0)
+
+    if mode_key == "storm_damage":
+        return wind >= 35.0 or precip >= 0.75
+    if mode_key == "lawn_care":
+        return 60.0 <= temp <= 82.0 and 0.05 <= precip <= 0.45
+    if mode_key == "construction":
+        return precip >= 0.25 or wind >= 22.0 or temp <= 35.0 or temp >= 95.0
+    return precip >= 0.3 or wind >= 20.0 or abs(temp - 70.0) >= 18.0
+
+
+def evaluate_mature_predictions() -> int:
+    store = get_knowledge_store()
+    today = now_utc().date().isoformat()
+    pending = store.list_mature_predictions_without_outcome(today)
+    written = 0
+    for prediction in pending:
+        probability = float(prediction.get("probability") or 0.0)
+        actual_happened = did_prediction_outcome_happen(
+            str(prediction.get("mode") or DEFAULT_WEATHER_MODE),
+            prediction.get("factors") if isinstance(prediction.get("factors"), dict) else {},
+        )
+        if actual_happened:
+            accuracy = max(0.0, min(1.0, probability / 100.0))
+        else:
+            accuracy = max(0.0, min(1.0, (100.0 - probability) / 100.0))
+        store.save_prediction_outcome(
+            prediction_id=str(prediction["id"]),
+            actual_outcome=actual_happened,
+            accuracy_score=round(accuracy, 4),
+            notes="Auto-evaluated from forecast factors heuristic",
+        )
+        written += 1
+    return written
+
+
+def build_weather_insights(
+    *,
+    mode: str,
+    coherence: Dict[str, float],
+    current: Optional[Dict[str, Any]],
+    forecast_daily: List[Dict[str, Any]],
+    alerts: List[Dict[str, Any]],
+) -> List[str]:
+    mode_key = normalize_weather_mode(mode)
+    insights: List[str] = []
+
+    if coherence["cci"] >= 75:
+        insights.append("Coherence is high: forecast confidence and mode alignment are strong.")
+    elif coherence["cci"] >= 55:
+        insights.append("Coherence is moderate: conditions are usable with some uncertainty.")
+    else:
+        insights.append("Coherence is low: treat near-term predictions as tentative.")
+
+    if alerts:
+        insights.append(f"{len(alerts)} weather alert(s) are active for this location.")
+
+    if current:
+        temp = current.get("temp_f")
+        wind = current.get("wind_mph")
+        precip = current.get("precip_in")
+        if temp is not None and wind is not None:
+            insights.append(
+                f"Current conditions: {temp:.0f}F, wind {wind:.0f} mph, precip {float(precip or 0.0):.2f} in."
+            )
+
+    if forecast_daily:
+        first = forecast_daily[0]
+        insights.append(
+            f"Next-day outlook: high {float(first.get('temp_max_f') or 0.0):.0f}F, "
+            f"precip {float(first.get('precip_total_in') or 0.0):.2f} in."
+        )
+
+    if mode_key == "storm_damage":
+        insights.append("Storm mode prioritizes wind, precip intensity, and severe-signal markers.")
+    elif mode_key == "lawn_care":
+        insights.append("Lawn mode favors moderate moisture and ideal turf temperature windows.")
+    elif mode_key == "construction":
+        insights.append("Construction mode emphasizes delay risk from rain, wind, and extreme temperatures.")
+    else:
+        insights.append("General mode balances overall weather significance across core signals.")
+
+    return insights
+
+
+async def refresh_weather_bundle(
+    *,
+    lat: float,
+    lon: float,
+    force_refresh: bool,
+    ttl_minutes: int,
+) -> Dict[str, Any]:
+    cache_bundle = get_cached_weather_bundle(lat, lon)
+    cache_ts = cache_bundle["last_refresh_ts"]
+    has_cache = cache_bundle["current"] is not None or bool(cache_bundle["forecast_3h"])
+    stale = is_cache_stale(cache_ts, ttl_minutes)
+
+    if not force_refresh and has_cache and not stale:
+        return {
+            **cache_bundle,
+            "source": "cache",
+            "stale": False,
+            "warning": None,
+        }
+
+    if not get_openweather_api_key():
+        if has_cache:
+            return {
+                **cache_bundle,
+                "source": "cache",
+                "stale": True,
+                "warning": "missing_api_key",
+            }
+        raise WeatherConfigError("OpenWeather API key is not configured.")
+
+    try:
+        fetched_at = str(int(time.time()))
+        current = await fetch_openweather_current(lat, lon)
+        forecast_points = await fetch_openweather_forecast(lat, lon)
+        alerts: List[Dict[str, Any]] = []
+        warning: Optional[str] = None
+        try:
+            alerts = await fetch_openweather_alerts(lat, lon)
+        except Exception as alert_error:
+            warning = f"alerts_unavailable: {alert_error}"
+            print(
+                f"Weather alerts warning: {type(alert_error).__name__}: {alert_error}",
+                file=sys.stderr,
+            )
+        store = get_knowledge_store()
+        store.save_weather_snapshot(
+            lat=lat,
+            lon=lon,
+            current=current,
+            forecast_points=forecast_points,
+            alerts=alerts,
+            fetched_at=fetched_at,
+        )
+        return {
+            "current": current,
+            "forecast_3h": forecast_points,
+            "forecast_daily": summarize_daily_forecast(forecast_points),
+            "alerts": alerts,
+            "last_refresh_ts": fetched_at,
+            "source": "live",
+            "stale": False,
+            "warning": warning,
+        }
+    except Exception as error:
+        if has_cache:
+            return {
+                **cache_bundle,
+                "source": "cache",
+                "stale": True,
+                "warning": str(error),
+            }
+        raise
+
+
+def get_weather_status_payload() -> Dict[str, Any]:
+    store = get_knowledge_store()
+    has_cache = store.has_cached_weather_data()
+    last_refresh = store.get_last_weather_refresh_ts()
+    api_key = get_openweather_api_key()
+    if not api_key:
+        return {
+            "enabled": False,
+            "reason": "missing_api_key",
+            "has_cached_data": has_cache,
+            "last_refresh_ts": last_refresh,
+        }
+
+    latest_event = store.get_latest_weather_api_event()
+    reason = None
+    if latest_event and not bool(latest_event.get("success")):
+        status = latest_event.get("http_status")
+        error_text = str(latest_event.get("error_text") or "").lower()
+        if status == 401:
+            if "one call" in error_text and "subscription" in error_text:
+                reason = None
+            else:
+                reason = "invalid_api_key"
+        elif status is None or int(status) >= 500:
+            reason = "api_unreachable"
+
+    return {
+        "enabled": reason is None,
+        "reason": reason,
+        "has_cached_data": has_cache,
+        "last_refresh_ts": last_refresh,
+    }
+
+
+def build_weather_context_block(
+    *,
+    mode: str,
+    location: Dict[str, Any],
+    current: Optional[Dict[str, Any]],
+    forecast_daily: List[Dict[str, Any]],
+    alerts: List[Dict[str, Any]],
+    coherence: Dict[str, float],
+    predictions: List[Dict[str, Any]],
+) -> Tuple[str, List[Dict[str, Any]]]:
+    if not current and not forecast_daily and not predictions:
+        return "", []
+
+    location_label = (
+        f"{location.get('city')}, {location.get('state')}" if location.get("state") else location.get("city")
+    )
+    context_parts = [
+        "Weather Intelligence Context:",
+        f"Location: {location_label}, {location.get('country')}",
+        f"Mode: {mode}",
+        f"Coherence: integrity={coherence['integrity']:.1f}, resilience={coherence['resilience']:.1f}, "
+        f"meaning={coherence['meaning']:.1f}, cci={coherence['cci']:.1f}",
+        "",
+    ]
+    sources: List[Dict[str, Any]] = []
+
+    if current:
+        context_parts.append(
+            f"Current: {float(current.get('temp_f') or 0.0):.0f}F, "
+            f"wind {float(current.get('wind_mph') or 0.0):.0f} mph, "
+            f"precip {float(current.get('precip_in') or 0.0):.2f} in, "
+            f"{current.get('condition_desc') or current.get('condition_main') or 'unknown'}."
+        )
+        sources.append(
+            {
+                "source_type": "weather",
+                "label": "Current conditions",
+                "observed_at": str(current.get("observed_ts") or int(time.time())),
+                "mode": mode,
+            }
+        )
+
+    for index, day in enumerate(forecast_daily[:3]):
+        context_parts.append(
+            f"Day {index + 1} ({day['date']}): high {float(day.get('temp_max_f') or 0.0):.0f}F, "
+            f"precip {float(day.get('precip_total_in') or 0.0):.2f} in, "
+            f"wind max {float(day.get('wind_max_mph') or 0.0):.0f} mph."
+        )
+        sources.append(
+            {
+                "source_type": "weather",
+                "label": f"Forecast day {index + 1}",
+                "observed_at": day["date"],
+                "mode": mode,
+            }
+        )
+
+    if alerts:
+        context_parts.append(f"Alerts: {len(alerts)} active weather alert(s).")
+        sources.append(
+            {
+                "source_type": "weather",
+                "label": "Severe weather alerts",
+                "observed_at": str(int(time.time())),
+                "mode": mode,
+            }
+        )
+
+    for prediction in predictions[:2]:
+        context_parts.append(f"Prediction: {prediction['prediction_text']}")
+        sources.append(
+            {
+                "source_type": "weather",
+                "label": "Prediction",
+                "observed_at": prediction.get("target_date"),
+                "mode": mode,
+            }
+        )
+
+    return "\n".join(context_parts).strip(), sources
+
+
+async def retrieve_weather_context(query: str) -> Tuple[str, List[Dict[str, Any]]]:
+    if not is_weather_intent(query):
+        return "", []
+
+    settings = get_knowledge_store().get_weather_settings()
+    location = settings.get("location")
+    if not location:
+        return "", []
+
+    mode = normalize_weather_mode(settings.get("mode"))
+    bundle = await refresh_weather_bundle(
+        lat=float(location["lat"]),
+        lon=float(location["lon"]),
+        force_refresh=False,
+        ttl_minutes=int(settings.get("cache_ttl_minutes") or WEATHER_CACHE_TTL_MINUTES),
+    )
+    coherence = calculate_coherence_scores(
+        mode=mode,
+        current=bundle.get("current"),
+        forecast_points=bundle.get("forecast_3h") or [],
+        forecast_daily=bundle.get("forecast_daily") or [],
+        alerts=bundle.get("alerts") or [],
+    )
+    predictions = generate_predictions(
+        mode=mode,
+        forecast_daily=bundle.get("forecast_daily") or [],
+    )
+
+    return build_weather_context_block(
+        mode=mode,
+        location=location,
+        current=bundle.get("current"),
+        forecast_daily=bundle.get("forecast_daily") or [],
+        alerts=bundle.get("alerts") or [],
+        coherence=coherence,
+        predictions=predictions,
+    )
+
+
+async def get_or_refresh_current_weather(
+    *,
+    lat: float,
+    lon: float,
+    force_refresh: bool,
+    ttl_minutes: int,
+) -> Dict[str, Any]:
+    store = get_knowledge_store()
+    current_row = store.get_latest_weather_current(lat, lon)
+    current = normalize_current_row(current_row)
+    cache_ts = str(current_row["fetched_at"]) if current_row and current_row.get("fetched_at") else None
+    stale = is_cache_stale(cache_ts, ttl_minutes)
+
+    if current and not force_refresh and not stale:
+        return {"data": current, "source": "cache", "stale": False, "fetched_at": cache_ts}
+
+    if not get_openweather_api_key():
+        if current:
+            return {"data": current, "source": "cache", "stale": True, "fetched_at": cache_ts}
+        raise WeatherConfigError("OpenWeather API key is not configured.")
+
+    try:
+        live = await fetch_openweather_current(lat, lon)
+        fetched_at = store.save_current_weather(lat=lat, lon=lon, current=live)
+        return {"data": live, "source": "live", "stale": False, "fetched_at": fetched_at}
+    except Exception:
+        if current:
+            return {"data": current, "source": "cache", "stale": True, "fetched_at": cache_ts}
+        raise
+
+
+async def get_or_refresh_forecast_weather(
+    *,
+    lat: float,
+    lon: float,
+    force_refresh: bool,
+    ttl_minutes: int,
+) -> Dict[str, Any]:
+    store = get_knowledge_store()
+    rows = store.get_latest_weather_forecast(lat, lon)
+    points = hydrate_forecast_rows(rows)
+    cache_ts = str(rows[0]["fetched_at"]) if rows and rows[0].get("fetched_at") else None
+    stale = is_cache_stale(cache_ts, ttl_minutes)
+
+    if points and not force_refresh and not stale:
+        return {
+            "forecast_3h": points,
+            "forecast_daily": summarize_daily_forecast(points),
+            "source": "cache",
+            "stale": False,
+            "fetched_at": cache_ts,
+        }
+
+    if not get_openweather_api_key():
+        if points:
+            return {
+                "forecast_3h": points,
+                "forecast_daily": summarize_daily_forecast(points),
+                "source": "cache",
+                "stale": True,
+                "fetched_at": cache_ts,
+            }
+        raise WeatherConfigError("OpenWeather API key is not configured.")
+
+    try:
+        live_points = await fetch_openweather_forecast(lat, lon)
+        fetched_at = store.save_forecast_weather(
+            lat=lat,
+            lon=lon,
+            forecast_points=live_points,
+        )
+        return {
+            "forecast_3h": live_points,
+            "forecast_daily": summarize_daily_forecast(live_points),
+            "source": "live",
+            "stale": False,
+            "fetched_at": fetched_at,
+        }
+    except Exception:
+        if points:
+            return {
+                "forecast_3h": points,
+                "forecast_daily": summarize_daily_forecast(points),
+                "source": "cache",
+                "stale": True,
+                "fetched_at": cache_ts,
+            }
+        raise
+
+
+async def get_or_refresh_alert_weather(
+    *,
+    lat: float,
+    lon: float,
+    force_refresh: bool,
+    ttl_minutes: int,
+) -> Dict[str, Any]:
+    store = get_knowledge_store()
+    rows = store.get_latest_weather_alerts(lat, lon)
+    alerts = normalize_alert_rows(rows)
+    cache_ts = str(rows[0]["fetched_at"]) if rows and rows[0].get("fetched_at") else None
+    stale = is_cache_stale(cache_ts, ttl_minutes)
+
+    if alerts and not force_refresh and not stale:
+        return {"alerts": alerts, "source": "cache", "stale": False, "fetched_at": cache_ts}
+
+    if not get_openweather_api_key():
+        if alerts:
+            return {"alerts": alerts, "source": "cache", "stale": True, "fetched_at": cache_ts}
+        raise WeatherConfigError("OpenWeather API key is not configured.")
+
+    try:
+        live_alerts = await fetch_openweather_alerts(lat, lon)
+        fetched_at = store.save_weather_alerts(lat=lat, lon=lon, alerts=live_alerts)
+        return {"alerts": live_alerts, "source": "live", "stale": False, "fetched_at": fetched_at}
+    except Exception:
+        if alerts:
+            return {"alerts": alerts, "source": "cache", "stale": True, "fetched_at": cache_ts}
+        raise
 
 
 def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
@@ -1785,6 +3780,8 @@ async def startup() -> None:
     """Load prompts and initialize local stores."""
     global BASE_PROMPT, MODE_PROMPTS
 
+    load_vesta_env()
+
     required_prompts = ["base.txt", "draft.txt", "think.txt", "clarify.txt", "general.txt"]
     missing_prompts = []
 
@@ -2128,16 +4125,31 @@ async def chat(request: ChatRequest):
                 file=sys.stderr,
             )
 
+        weather_context = ""
+        weather_sources: List[Dict[str, Any]] = []
+        if is_weather_intent(request.message):
+            try:
+                weather_context, weather_sources = await retrieve_weather_context(request.message)
+            except Exception as weather_error:
+                print(
+                    f"Weather context warning: {type(weather_error).__name__}: {weather_error}",
+                    file=sys.stderr,
+                )
+
+        context_blocks = [block for block in [knowledge_context, weather_context] if block]
+        combined_context = "\n\n".join(context_blocks)
+        combined_sources = [*knowledge_sources, *weather_sources]
+
         mode_prompt = MODE_PROMPTS.get(request.mode, "")
         full_prompt = build_conversation_context(
             request.messages,
             mode_prompt,
             request.message,
-            knowledge_context,
+            combined_context,
         )
 
         response = StreamingResponse(
-            stream_ollama_response(model_name, full_prompt, knowledge_sources),
+            stream_ollama_response(model_name, full_prompt, combined_sources),
             media_type="text/event-stream",
         )
 
@@ -2872,6 +4884,318 @@ async def run_setup_prerequisites_stream(request: SetupPrerequisitesRequest):
 async def get_setup_history(limit: int = Query(default=20, ge=1, le=200)):
     store = get_knowledge_store()
     return {"runs": store.list_setup_runs(limit)}
+
+
+@app.get("/weather/status")
+async def get_weather_status():
+    return get_weather_status_payload()
+
+
+@app.get("/weather/settings")
+async def get_weather_settings():
+    store = get_knowledge_store()
+    return store.get_weather_settings()
+
+
+@app.put("/weather/settings")
+async def update_weather_settings(request: WeatherSettingsUpdateRequest):
+    mode = normalize_weather_mode(request.mode)
+    country = normalize_country_code(request.country)
+    city = request.city.strip()
+    state = request.state.strip() if request.state else None
+    if not city:
+        raise HTTPException(status_code=400, detail="City is required")
+
+    try:
+        matches = await resolve_openweather_location(
+            city=city,
+            state=state,
+            country=country,
+        )
+    except WeatherConfigError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except WeatherAuthError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"Location lookup failed: {error}")
+
+    if not matches:
+        raise HTTPException(status_code=404, detail="Location not found")
+
+    best = matches[0]
+    settings = get_knowledge_store().set_weather_settings(
+        mode=mode,
+        city=str(best.get("name") or city),
+        state=best.get("state"),
+        country=str(best.get("country") or country),
+        lat=float(best["lat"]),
+        lon=float(best["lon"]),
+        cache_ttl_minutes=WEATHER_CACHE_TTL_MINUTES,
+    )
+    return settings
+
+
+@app.get("/weather/resolve-location")
+async def resolve_weather_location(
+    city: str = Query(..., min_length=1),
+    state: Optional[str] = Query(default=None),
+    country: str = Query(default="US", min_length=2, max_length=3),
+):
+    try:
+        matches = await resolve_openweather_location(
+            city=city,
+            state=state,
+            country=normalize_country_code(country),
+        )
+    except WeatherConfigError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except WeatherAuthError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"Location lookup failed: {error}")
+
+    return {"results": matches}
+
+
+@app.get("/weather/current")
+async def get_current_weather(
+    lat: float = Query(..., ge=-90.0, le=90.0),
+    lon: float = Query(..., ge=-180.0, le=180.0),
+    force_refresh: bool = Query(default=False),
+):
+    ttl = int(get_knowledge_store().get_weather_settings()["cache_ttl_minutes"])
+    try:
+        payload = await get_or_refresh_current_weather(
+            lat=lat,
+            lon=lon,
+            force_refresh=force_refresh,
+            ttl_minutes=ttl,
+        )
+    except WeatherConfigError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except WeatherAuthError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"Current weather unavailable: {error}")
+
+    return {
+        "lat": lat,
+        "lon": lon,
+        "fetched_at": payload.get("fetched_at"),
+        "source": payload.get("source"),
+        "stale": bool(payload.get("stale")),
+        "data": payload.get("data"),
+    }
+
+
+@app.get("/weather/forecast")
+async def get_forecast_weather(
+    lat: float = Query(..., ge=-90.0, le=90.0),
+    lon: float = Query(..., ge=-180.0, le=180.0),
+    force_refresh: bool = Query(default=False),
+):
+    ttl = int(get_knowledge_store().get_weather_settings()["cache_ttl_minutes"])
+    try:
+        payload = await get_or_refresh_forecast_weather(
+            lat=lat,
+            lon=lon,
+            force_refresh=force_refresh,
+            ttl_minutes=ttl,
+        )
+    except WeatherConfigError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except WeatherAuthError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"Forecast unavailable: {error}")
+
+    return {
+        "lat": lat,
+        "lon": lon,
+        "fetched_at": payload.get("fetched_at"),
+        "source": payload.get("source"),
+        "stale": bool(payload.get("stale")),
+        "forecast_3h": payload.get("forecast_3h"),
+        "forecast_daily": payload.get("forecast_daily"),
+    }
+
+
+@app.get("/weather/alerts")
+async def get_weather_alerts(
+    lat: float = Query(..., ge=-90.0, le=90.0),
+    lon: float = Query(..., ge=-180.0, le=180.0),
+    force_refresh: bool = Query(default=False),
+):
+    ttl = int(get_knowledge_store().get_weather_settings()["cache_ttl_minutes"])
+    try:
+        payload = await get_or_refresh_alert_weather(
+            lat=lat,
+            lon=lon,
+            force_refresh=force_refresh,
+            ttl_minutes=ttl,
+        )
+    except WeatherConfigError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except WeatherAuthError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"Alerts unavailable: {error}")
+
+    return {
+        "lat": lat,
+        "lon": lon,
+        "fetched_at": payload.get("fetched_at"),
+        "source": payload.get("source"),
+        "stale": bool(payload.get("stale")),
+        "alerts": payload.get("alerts") or [],
+    }
+
+
+@app.post("/weather/refresh")
+async def refresh_weather():
+    status = get_weather_status_payload()
+    if not status["enabled"] and status.get("reason") == "missing_api_key":
+        raise HTTPException(status_code=503, detail="OpenWeather API key is not configured.")
+
+    store = get_knowledge_store()
+    settings = store.get_weather_settings()
+    location = settings.get("location")
+    if not location:
+        raise HTTPException(status_code=400, detail="Weather location is not configured.")
+
+    try:
+        bundle = await refresh_weather_bundle(
+            lat=float(location["lat"]),
+            lon=float(location["lon"]),
+            force_refresh=True,
+            ttl_minutes=int(settings.get("cache_ttl_minutes") or WEATHER_CACHE_TTL_MINUTES),
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"Weather refresh failed: {error}")
+
+    mode = normalize_weather_mode(settings.get("mode"))
+    coherence = calculate_coherence_scores(
+        mode=mode,
+        current=bundle.get("current"),
+        forecast_points=bundle.get("forecast_3h") or [],
+        forecast_daily=bundle.get("forecast_daily") or [],
+        alerts=bundle.get("alerts") or [],
+    )
+    generated = generate_predictions(
+        mode=mode,
+        forecast_daily=bundle.get("forecast_daily") or [],
+    )
+    saved_predictions = store.save_predictions(
+        mode=mode,
+        integrity=coherence["integrity"],
+        resilience=coherence["resilience"],
+        meaning=coherence["meaning"],
+        cci_score=coherence["cci"],
+        predictions=generated,
+    )
+    evaluated_count = evaluate_mature_predictions()
+    insights = build_weather_insights(
+        mode=mode,
+        coherence=coherence,
+        current=bundle.get("current"),
+        forecast_daily=bundle.get("forecast_daily") or [],
+        alerts=bundle.get("alerts") or [],
+    )
+
+    return {
+        "location": location,
+        "mode": mode,
+        "source": bundle.get("source"),
+        "stale": bool(bundle.get("stale")),
+        "warning": bundle.get("warning"),
+        "fetched_at": bundle.get("last_refresh_ts"),
+        "coherence": coherence,
+        "predictions": saved_predictions,
+        "insights": insights,
+        "evaluated_predictions": evaluated_count,
+    }
+
+
+@app.get("/weather/dashboard")
+async def get_weather_dashboard():
+    status = get_weather_status_payload()
+    if not status["enabled"] and not status.get("has_cached_data"):
+        raise HTTPException(
+            status_code=503,
+            detail=f"Weather is unavailable: {status.get('reason') or 'disabled'}",
+        )
+
+    store = get_knowledge_store()
+    settings = store.get_weather_settings()
+    location = settings.get("location")
+    if not location:
+        raise HTTPException(status_code=400, detail="Weather location is not configured.")
+
+    try:
+        bundle = await refresh_weather_bundle(
+            lat=float(location["lat"]),
+            lon=float(location["lon"]),
+            force_refresh=False,
+            ttl_minutes=int(settings.get("cache_ttl_minutes") or WEATHER_CACHE_TTL_MINUTES),
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"Weather dashboard unavailable: {error}")
+
+    mode = normalize_weather_mode(settings.get("mode"))
+    coherence = calculate_coherence_scores(
+        mode=mode,
+        current=bundle.get("current"),
+        forecast_points=bundle.get("forecast_3h") or [],
+        forecast_daily=bundle.get("forecast_daily") or [],
+        alerts=bundle.get("alerts") or [],
+    )
+    today = now_utc().date().isoformat()
+    saved_predictions = store.list_predictions(mode=mode, date_from=today, limit=14)
+    if not saved_predictions:
+        generated = generate_predictions(
+            mode=mode,
+            forecast_daily=bundle.get("forecast_daily") or [],
+        )
+        saved_predictions = [
+            {
+                "id": f"preview-{index}",
+                "created_at": str(int(time.time())),
+                "mode": mode,
+                "target_date": item["target_date"],
+                "integrity": coherence["integrity"],
+                "resilience": coherence["resilience"],
+                "meaning": coherence["meaning"],
+                "cci_score": coherence["cci"],
+                "probability": item["probability"],
+                "prediction_text": item["prediction_text"],
+                "factors": item.get("factors") or {},
+            }
+            for index, item in enumerate(generated)
+        ]
+
+    insights = build_weather_insights(
+        mode=mode,
+        coherence=coherence,
+        current=bundle.get("current"),
+        forecast_daily=bundle.get("forecast_daily") or [],
+        alerts=bundle.get("alerts") or [],
+    )
+
+    return {
+        "location": location,
+        "mode": mode,
+        "current": bundle.get("current"),
+        "forecast_daily": bundle.get("forecast_daily") or [],
+        "forecast_3h": bundle.get("forecast_3h") or [],
+        "alerts": bundle.get("alerts") or [],
+        "coherence": coherence,
+        "predictions": saved_predictions,
+        "insights": insights,
+        "cache_age_seconds": cache_age_seconds(bundle.get("last_refresh_ts")),
+        "source": bundle.get("source"),
+        "stale": bool(bundle.get("stale")),
+        "warning": bundle.get("warning"),
+    }
 
 
 @app.get("/settings/models")

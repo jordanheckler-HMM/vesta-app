@@ -23,4 +23,25 @@ describe("MessageBubble", () => {
     expect(screen.getByText("Sources")).toBeInTheDocument();
     expect(screen.getByText("Global: sop.txt#0")).toBeInTheDocument();
   });
+
+  it("renders weather source labels for assistant messages", () => {
+    render(
+      <MessageBubble
+        role="assistant"
+        content="Weather summary."
+        sources={[
+          {
+            source_type: "weather",
+            label: "Current conditions",
+            observed_at: "1700000000",
+            mode: "storm_damage",
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByText("Weather: Current conditions (storm damage)"),
+    ).toBeInTheDocument();
+  });
 });

@@ -17,6 +17,7 @@ import ThemeSettingsTab, {
   type ModelSettingsValues,
   type SetupPrerequisitesStatus,
 } from "@/components/ThemeSettingsTab";
+import WeatherTab, { type WeatherStatus } from "@/components/WeatherTab";
 import VestaFooter from "@/components/VestaFooter";
 import VestaHeader from "@/components/VestaHeader";
 import { Button } from "@/components/ui/button";
@@ -96,7 +97,10 @@ const Index = ({ isMiniView = false }: IndexProps) => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [lastModelUsed, setLastModelUsed] = useState<string | null>(null);
   const [currentModel, setCurrentModel] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"chat" | "files" | "settings">("chat");
+  const [activeTab, setActiveTab] = useState<
+    "chat" | "files" | "weather" | "settings"
+  >("chat");
+  const [weatherEnabled, setWeatherEnabled] = useState(false);
 
   const [folders, setFolders] = useState<FolderSummary[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -235,6 +239,40 @@ const Index = ({ isMiniView = false }: IndexProps) => {
     [isMiniView],
   );
 
+  const loadWeatherStatus = useCallback(
+    async (showErrorToast = false) => {
+      if (isMiniView) {
+        setWeatherEnabled(false);
+        return;
+      }
+
+      try {
+        const response = await fetch(`${BACKEND_BASE_URL}/weather/status`);
+        if (!response.ok) {
+          throw new Error("Failed to load weather status");
+        }
+
+        const body = (await response.json()) as WeatherStatus;
+        setWeatherEnabled(Boolean(body.enabled));
+
+        if (!body.enabled) {
+          setActiveTab((current) => (current === "weather" ? "chat" : current));
+        }
+      } catch (error) {
+        setWeatherEnabled(false);
+        setActiveTab((current) => (current === "weather" ? "chat" : current));
+        if (showErrorToast) {
+          toast({
+            variant: "destructive",
+            title: "Could not load weather status",
+            description: "Weather features are unavailable right now.",
+          });
+        }
+      }
+    },
+    [isMiniView],
+  );
+
   useEffect(() => {
     if (isMiniView || initializedMainRef.current) {
       return;
@@ -346,6 +384,10 @@ const Index = ({ isMiniView = false }: IndexProps) => {
   useEffect(() => {
     void loadSetupStatus(false);
   }, [loadSetupStatus]);
+
+  useEffect(() => {
+    void loadWeatherStatus(false);
+  }, [loadWeatherStatus]);
 
   useEffect(() => {
     if (isMiniView || isSetupStatusLoading || !setupStatus) {
@@ -1476,7 +1518,7 @@ const Index = ({ isMiniView = false }: IndexProps) => {
           <Tabs
             value={activeTab}
             onValueChange={(value) =>
-              setActiveTab(value as "chat" | "files" | "settings")
+              setActiveTab(value as "chat" | "files" | "weather" | "settings")
             }
             className="flex-1 flex flex-col min-h-0"
           >
@@ -1485,6 +1527,9 @@ const Index = ({ isMiniView = false }: IndexProps) => {
                 <TabsList>
                   <TabsTrigger value="chat">Chat</TabsTrigger>
                   <TabsTrigger value="files">Files</TabsTrigger>
+                  {weatherEnabled ? (
+                    <TabsTrigger value="weather">Weather</TabsTrigger>
+                  ) : null}
                   <TabsTrigger value="settings">Settings</TabsTrigger>
                 </TabsList>
               </div>
@@ -1500,6 +1545,12 @@ const Index = ({ isMiniView = false }: IndexProps) => {
                 defaultFolderId={activeConversationFolderId}
               />
             </TabsContent>
+
+            {weatherEnabled ? (
+              <TabsContent value="weather" className="flex-1 mt-0 overflow-y-auto">
+                <WeatherTab backendBaseUrl={BACKEND_BASE_URL} />
+              </TabsContent>
+            ) : null}
 
             <TabsContent value="settings" className="flex-1 mt-0 overflow-y-auto">
               <ThemeSettingsTab

@@ -35,7 +35,7 @@ Output app:
 - Main window:
   - Persistent saved chats in left sidebar
   - Folder/project organization
-  - Tabs: `Chat`, `Files`, `Settings`
+  - Tabs: `Chat`, `Files`, `Weather`, `Settings` (Weather shown only when OpenWeather is configured)
   - `New chat` action creates a saved conversation
 - Mini window:
   - Compact scratch chat for quick prompts
@@ -72,3 +72,19 @@ ollama pull qwen3-embedding:0.6b
 ```
 
 The first-run setup flow in the app auto-downloads any missing model from this list and skips models that are already installed.
+
+## Weather tab behavior
+
+- Weather tab appears only when backend `/weather/status` reports `enabled=true`.
+- Missing/invalid `OPENWEATHER_API_KEY` hides Weather tab.
+- Weather settings are app-global:
+  - tracking mode (`Storm Damage`, `Lawn Care`, `Construction`, `General`)
+  - location (city/state/country resolved to lat/lon)
+- Dashboard shows:
+  - current conditions
+  - 5-day forecast chart
+  - alerts
+  - coherence score (integrity/resilience/meaning/CCI)
+  - prediction timeline and insights
+- Manual refresh calls `/weather/refresh`; normal loads use cache unless stale (>45 min).
+- If One Call 3.0 alerts are not included on your OpenWeather account, dashboard still works with current + forecast and shows alert warning state.

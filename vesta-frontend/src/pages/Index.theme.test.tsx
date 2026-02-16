@@ -7,53 +7,76 @@ beforeEach(() => {
   document.documentElement.classList.remove("dark", "manila");
   window.localStorage.clear();
 
-  const fetchMock = vi
-    .fn()
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify({ folders: [] }), { status: 200 }),
-    )
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify({ conversations: [] }), { status: 200 }),
-    )
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          ollama_installed: true,
-          ollama_running: true,
-          required_models: [
-            "hymetalab/vesta-lite",
-            "hymetalab/vesta-general",
-            "hymetalab/vesta-deep",
-          ],
-          available_models: [
-            "hymetalab/vesta-lite",
-            "hymetalab/vesta-general",
-            "hymetalab/vesta-deep",
-          ],
-          missing_models: [],
-          ready: true,
-        }),
-        { status: 200 },
-      ),
-    )
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          configured_models: {
-            lite: "hymetalab/vesta-lite",
-            general: "hymetalab/vesta-general",
-            deep: "hymetalab/vesta-deep",
-          },
-          available_models: [
-            "hymetalab/vesta-lite",
-            "hymetalab/vesta-general",
-            "hymetalab/vesta-deep",
-          ],
-          ollama_connected: true,
-        }),
-        { status: 200 },
-      ),
-    );
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/folders")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ folders: [] }), { status: 200 }),
+      );
+    }
+    if (url.endsWith("/conversations")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ conversations: [] }), { status: 200 }),
+      );
+    }
+    if (url.endsWith("/setup/prerequisites")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            ollama_installed: true,
+            ollama_running: true,
+            required_models: [
+              "hymetalab/vesta-lite",
+              "hymetalab/vesta-general",
+              "hymetalab/vesta-deep",
+            ],
+            available_models: [
+              "hymetalab/vesta-lite",
+              "hymetalab/vesta-general",
+              "hymetalab/vesta-deep",
+            ],
+            missing_models: [],
+            ready: true,
+          }),
+          { status: 200 },
+        ),
+      );
+    }
+    if (url.endsWith("/weather/status")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            enabled: false,
+            reason: "missing_api_key",
+            has_cached_data: false,
+            last_refresh_ts: null,
+          }),
+          { status: 200 },
+        ),
+      );
+    }
+    if (url.endsWith("/settings/models")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            configured_models: {
+              lite: "hymetalab/vesta-lite",
+              general: "hymetalab/vesta-general",
+              deep: "hymetalab/vesta-deep",
+            },
+            available_models: [
+              "hymetalab/vesta-lite",
+              "hymetalab/vesta-general",
+              "hymetalab/vesta-deep",
+            ],
+            ollama_connected: true,
+          }),
+          { status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+  });
   vi.stubGlobal("fetch", fetchMock);
 });
 

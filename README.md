@@ -1,6 +1,6 @@
 # Vesta
 
-Internal desktop AI assistant with local chat and local persistent knowledge retrieval.
+Internal desktop AI assistant with local chat, persistent local knowledge retrieval, and optional weather intelligence.
 
 ## Stack
 
@@ -30,6 +30,23 @@ ollama pull qwen3-embedding:0.6b
 ```
 
 The first-run setup flow auto-downloads these same models if they are missing and skips models that already exist locally.
+
+## OpenWeather setup (optional Weather tab)
+
+Weather features are enabled only when `OPENWEATHER_API_KEY` is available.
+
+```bash
+cd vesta-backend
+cp .env.example .env
+# edit .env and set OPENWEATHER_API_KEY
+```
+
+Env file load order:
+1. `VESTA_ENV_FILE` (if set)
+2. `${VESTA_DATA_DIR}/.env` (or `~/.vesta/.env`)
+3. repo cwd `.env`
+
+If no key (or invalid key) is available, the Weather tab is hidden and all non-weather features continue working.
 
 ## Install dependencies
 
@@ -106,6 +123,31 @@ macOS output:
 - Deleting a folder cascades folder chats and folder-scoped documents.
 - Mini chat (`?view=mini`) is intentionally scratch-only and session-local; it does not save to sidebar history.
 
+## Weather intelligence tab
+
+- Main window tab row is `Chat`, `Files`, `Weather`, `Settings`.
+- `Weather` tab is shown only when `/weather/status.enabled=true`.
+- Weather data uses OpenWeather APIs (current, 5-day/3-hour forecast, alerts).
+- If your key does not include One Call 3.0 alerts access, Vesta still loads current + forecast and shows alerts as unavailable.
+- Location is app-global (city/state/country resolved to lat/lon).
+- Dashboard supports manual refresh and automatic cache refresh when weather cache is older than 45 minutes.
+
+### Tracking modes
+
+- `Storm Damage`: prioritizes severe wind/precipitation/alert signals.
+- `Lawn Care`: prioritizes precipitation balance, moisture proxy, and ideal temperature window.
+- `Construction`: prioritizes precipitation, wind, and extreme-temperature disruption risk.
+- `General`: balanced weather significance.
+
+### Coherence scoring
+
+- `Integrity (0-100)`: forecast confidence + data completeness + API reliability.
+- `Resilience (0-100)`: learned historical accuracy for similar weather-pattern buckets.
+- `Meaning (0-100)`: alignment with selected tracking mode.
+- `CCI (0-100)`: mode-weighted composite of integrity/resilience/meaning.
+
+Predictions are generated for the next 5 days and stored locally with outcomes for ongoing resilience learning.
+
 ## Files knowledge base (persistent local RAG)
 
 - Main window includes a `Files` tab.
@@ -121,6 +163,13 @@ macOS output:
   - folder-scoped matches are ranked first when a chat is in a folder
   - global matches are used as fallback
 - Chat stream includes source metadata shown in assistant messages (`Global: ...` or `Folder <name>: ...`).
+
+## Weather-aware chat
+
+- Weather context is intent-gated in `/chat` (for weather-oriented prompts only).
+- Weather data is injected as structured context (separate from document RAG tables).
+- SSE metadata source labels include `source_type: "weather"` alongside document sources.
+- If weather retrieval fails, chat continues normally without weather context.
 
 ### Supported ingestion behavior
 
@@ -150,6 +199,8 @@ Expected shape:
 
 - `VESTA_DATA_DIR`: overrides local knowledge DB directory
 - `VESTA_BACKEND_PORT`: sidecar backend port (default `8090`)
+- `OPENWEATHER_API_KEY`: enables Weather tab and OpenWeather refresh
+- `VESTA_ENV_FILE`: optional explicit `.env` file path
 
 ## Troubleshooting
 
@@ -181,3 +232,4 @@ curl http://localhost:11434/api/version
 - Knowledge storage is local and unencrypted by default.
 - OCR/transcoding for scanned/image-only files is not included.
 - Mini chat is scratch-mode only and is not persisted to sidebar history.
+- Weather forecasts are limited to OpenWeather 5-day horizon (no synthetic day 6-7 extrapolation).
