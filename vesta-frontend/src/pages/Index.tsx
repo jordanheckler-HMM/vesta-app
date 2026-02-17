@@ -25,6 +25,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/components/ui/use-toast";
 import type { FolderColorId } from "@/lib/folder-colors";
 import { useAppTheme } from "@/hooks/use-app-theme";
+import { useAutoUpdate } from "@/hooks/use-auto-update";
 
 const BACKEND_BASE_URL = "http://localhost:8090";
 const SETUP_WIZARD_SEEN_KEY = "vesta-setup-wizard-seen";
@@ -89,6 +90,7 @@ interface IndexProps {
 
 const Index = ({ isMiniView = false }: IndexProps) => {
   const { theme, setTheme } = useAppTheme();
+  const { available: updateAvailable, version: updateVersion, downloading: updateDownloading, progress: updateProgress, startUpdate } = useAutoUpdate();
 
   const [mode, setMode] = useState<ThinkingMode>("general");
   const [model, setModel] = useState<ModelType>("auto");
@@ -1487,6 +1489,11 @@ const Index = ({ isMiniView = false }: IndexProps) => {
       <VestaHeader
         compact={isMiniView}
         onClearChat={isMiniView ? handleMiniClearChat : undefined}
+        updateAvailable={updateAvailable}
+        updateVersion={updateVersion}
+        updateDownloading={updateDownloading}
+        updateProgress={updateProgress}
+        onUpdate={startUpdate}
       />
 
       {isMiniView ? (

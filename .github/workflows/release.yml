@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+          - platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin'
+          - platform: 'ubuntu-22.04'
+            args: ''
+          - platform: 'windows-latest'
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install dependencies (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Go (for backend sidecar)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build backend sidecar
+        run: |
+          cd vesta-backend
+          # Determine the sidecar target triple
+          if [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            if echo "${{ matrix.args }}" | grep -q "aarch64"; then
+              GOOS=darwin GOARCH=arm64 go build -o ../vesta-frontend/src-tauri/binaries/vesta-backend-aarch64-apple-darwin -ldflags="-s -w" .
+            else
+              GOOS=darwin GOARCH=amd64 go build -o ../vesta-frontend/src-tauri/binaries/vesta-backend-x86_64-apple-darwin -ldflags="-s -w" .
+            fi
+          elif [ "${{ matrix.platform }}" = "ubuntu-22.04" ]; then
+            GOOS=linux GOARCH=amd64 go build -o ../vesta-frontend/src-tauri/binaries/vesta-backend-x86_64-unknown-linux-gnu -ldflags="-s -w" .
+          fi
+        shell: bash
+
+      - name: Build backend sidecar (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          cd vesta-backend
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build -o ../vesta-frontend/src-tauri/binaries/vesta-backend-x86_64-pc-windows-msvc.exe -ldflags="-s -w" .
+        shell: pwsh
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: vesta-frontend
+
+      - name: Build and release Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Vesta v__VERSION__'
+          releaseBody: 'See the assets to download and install this version.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+          projectPath: vesta-frontend
