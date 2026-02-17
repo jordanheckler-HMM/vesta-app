@@ -16,7 +16,7 @@ jobs:
           - platform: "macos-latest"
             args: "--target aarch64-apple-darwin"
             sidecar_triple: "aarch64-apple-darwin"
-          - platform: "macos-latest"
+          - platform: "macos-13"
             args: "--target x86_64-apple-darwin"
             sidecar_triple: "x86_64-apple-darwin"
           - platform: "ubuntu-22.04"
@@ -33,12 +33,12 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: 22
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || '' }}
 
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -46,14 +46,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      # --- Python backend sidecar (macOS / Linux) ---
       - name: Setup Python
-        if: matrix.platform != 'windows-latest'
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - name: Install Python dependencies & build sidecar (macOS / Linux)
+      - name: Install Python dependencies & build sidecar (Unix)
         if: matrix.platform != 'windows-latest'
         run: |
           cd vesta-backend
@@ -61,13 +59,6 @@ jobs:
           pip install pyinstaller
           TARGET_TRIPLE=${{ matrix.sidecar_triple }} FORCE_REBUILD=1 bash build_sidecar.sh
         shell: bash
-
-      # --- Python backend sidecar (Windows) ---
-      - name: Setup Python (Windows)
-        if: matrix.platform == 'windows-latest'
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
 
       - name: Install Python dependencies & build sidecar (Windows)
         if: matrix.platform == 'windows-latest'
