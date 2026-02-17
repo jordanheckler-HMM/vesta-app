@@ -222,11 +222,10 @@ const ChatSidebar = ({
     return (
       <div
         key={conversation.id}
-        className={`group flex items-center gap-1 rounded-md border ${
-          isActive
+        className={`group flex items-center gap-1 rounded-md border ${isActive
             ? "border-primary bg-primary/10"
             : "border-transparent hover:border-border hover:bg-accent/60"
-        }`}
+          }`}
       >
         <button
           type="button"
@@ -306,7 +305,7 @@ const ChatSidebar = ({
 
   return (
     <>
-      <aside className="w-72 border-r border-vesta-header-border bg-card flex flex-col min-h-0">
+      <aside className="w-72 border-r border-vesta-header-border bg-transparent flex flex-col min-h-0">
         <div className="p-3 border-b border-vesta-header-border">
           <div className="flex items-center gap-2">
             <Button
@@ -475,11 +474,10 @@ const ChatSidebar = ({
                       key={option.id}
                       type="button"
                       onClick={() => setFolderColorInput(option.id)}
-                      className={`rounded-md border px-2 py-2 text-xs text-left transition-colors ${
-                        selected
+                      className={`rounded-md border px-2 py-2 text-xs text-left transition-colors ${selected
                           ? "ring-2 ring-ring ring-offset-2 ring-offset-background"
                           : "hover:opacity-90"
-                      }`}
+                        }`}
                       style={getFolderLabelStyle(option.id)}
                       aria-label={`Choose ${option.label} folder color`}
                     >

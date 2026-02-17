@@ -1533,6 +1533,9 @@ const Index = ({ isMiniView = false }: IndexProps) => {
                 opacity: 0,
                 boxShadow: 'none',
                 pointerEvents: 'none',
+                backdropFilter: 'blur(20px)',
+                WebkitBackdropFilter: 'blur(20px)',
+                backgroundColor: 'hsl(var(--sidebar-background) / 0.75)',
               }}
             >
               <ChatSidebar
