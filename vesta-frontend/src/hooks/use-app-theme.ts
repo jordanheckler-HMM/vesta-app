@@ -5,10 +5,10 @@ export type AppTheme = "light" | "dark" | "manila";
 const THEME_STORAGE_KEY = "vesta-theme";
 
 const normalizeTheme = (value: string | null): AppTheme => {
-  if (value === "dark" || value === "manila") {
+  if (value === "dark" || value === "light") {
     return value;
   }
-  return "light";
+  return "manila";
 };
 
 const applyThemeClass = (theme: AppTheme) => {
@@ -25,7 +25,7 @@ const applyThemeClass = (theme: AppTheme) => {
 export const useAppTheme = () => {
   const [theme, setTheme] = useState<AppTheme>(() => {
     if (typeof window === "undefined") {
-      return "light";
+      return "manila";
     }
     return normalizeTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
   });

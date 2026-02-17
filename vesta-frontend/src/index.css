@@ -257,3 +257,11 @@
     @apply border-primary bg-accent;
   }
 }
+
+/* Collapsible sidebar – hover-to-reveal */
+.sidebar-hover-zone:hover .sidebar-panel {
+  transform: translateX(0) !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.10) !important;
+}

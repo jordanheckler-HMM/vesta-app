@@ -664,10 +664,10 @@ const Index = ({ isMiniView = false }: IndexProps) => {
                   prev.map((message) =>
                     message.id === assistantId
                       ? {
-                          ...message,
-                          content: accumulatedContent,
-                          sources: retrievedSources,
-                        }
+                        ...message,
+                        content: accumulatedContent,
+                        sources: retrievedSources,
+                      }
                       : message,
                   ),
                 );
@@ -680,10 +680,10 @@ const Index = ({ isMiniView = false }: IndexProps) => {
                     prev.map((message) =>
                       message.id === assistantId
                         ? {
-                            ...message,
-                            modelUsed: selectedModelHeader,
-                            sources: retrievedSources,
-                          }
+                          ...message,
+                          modelUsed: selectedModelHeader,
+                          sources: retrievedSources,
+                        }
                         : message,
                     ),
                   );
@@ -755,12 +755,12 @@ const Index = ({ isMiniView = false }: IndexProps) => {
           prev.map((message) =>
             message.id === assistantId
               ? {
-                  ...message,
-                  content:
-                    error instanceof Error
-                      ? error.message
-                      : "Vesta is unavailable right now.",
-                }
+                ...message,
+                content:
+                  error instanceof Error
+                    ? error.message
+                    : "Vesta is unavailable right now.",
+              }
               : message,
           ),
         );
@@ -1170,8 +1170,8 @@ const Index = ({ isMiniView = false }: IndexProps) => {
           if (eventType === "target_models") {
             const targetModels = Array.isArray(event.target_models)
               ? event.target_models
-                  .map((value) => String(value).trim())
-                  .filter((value) => value.length > 0)
+                .map((value) => String(value).trim())
+                .filter((value) => value.length > 0)
               : [];
             if (targetModels.length > 0) {
               setSetupModelProgress((prev) => {
@@ -1232,39 +1232,39 @@ const Index = ({ isMiniView = false }: IndexProps) => {
             const total = Number(event.total);
             const statusLabel =
               Number.isFinite(completed) &&
-              Number.isFinite(total) &&
-              total > 0
+                Number.isFinite(total) &&
+                total > 0
                 ? (() => {
-                    const now = Date.now();
-                    const timing = setupProgressTimingRef.current[modelName] || {
-                      lastCompleted: completed,
-                      lastAt: now,
-                      rate: 0,
-                    };
+                  const now = Date.now();
+                  const timing = setupProgressTimingRef.current[modelName] || {
+                    lastCompleted: completed,
+                    lastAt: now,
+                    rate: 0,
+                  };
 
-                    if (completed > timing.lastCompleted && now > timing.lastAt) {
-                      const deltaCompleted = completed - timing.lastCompleted;
-                      const deltaSeconds = (now - timing.lastAt) / 1000;
-                      if (deltaCompleted > 0 && deltaSeconds > 0) {
-                        const instantRate = deltaCompleted / deltaSeconds;
-                        timing.rate =
-                          timing.rate > 0
-                            ? timing.rate * 0.7 + instantRate * 0.3
-                            : instantRate;
-                      }
-                      timing.lastCompleted = completed;
-                      timing.lastAt = now;
+                  if (completed > timing.lastCompleted && now > timing.lastAt) {
+                    const deltaCompleted = completed - timing.lastCompleted;
+                    const deltaSeconds = (now - timing.lastAt) / 1000;
+                    if (deltaCompleted > 0 && deltaSeconds > 0) {
+                      const instantRate = deltaCompleted / deltaSeconds;
+                      timing.rate =
+                        timing.rate > 0
+                          ? timing.rate * 0.7 + instantRate * 0.3
+                          : instantRate;
                     }
-                    setupProgressTimingRef.current[modelName] = timing;
+                    timing.lastCompleted = completed;
+                    timing.lastAt = now;
+                  }
+                  setupProgressTimingRef.current[modelName] = timing;
 
-                    const percent = Math.floor((completed / total) * 100);
-                    const remaining = Math.max(0, total - completed);
-                    const etaLabel =
-                      timing.rate > 0 && remaining > 0
-                        ? ` • ${formatEtaSeconds(remaining / timing.rate)} left`
-                        : "";
-                    return `${percent}%${etaLabel}`;
-                  })()
+                  const percent = Math.floor((completed / total) * 100);
+                  const remaining = Math.max(0, total - completed);
+                  const etaLabel =
+                    timing.rate > 0 && remaining > 0
+                      ? ` • ${formatEtaSeconds(remaining / timing.rate)} left`
+                      : "";
+                  return `${percent}%${etaLabel}`;
+                })()
                 : String(event.status || "downloading");
 
             setSetupModelProgress((prev) => ({
@@ -1487,33 +1487,63 @@ const Index = ({ isMiniView = false }: IndexProps) => {
       <VestaHeader
         compact={isMiniView}
         onClearChat={isMiniView ? handleMiniClearChat : undefined}
-        onNewChat={
-          !isMiniView
-            ? () => {
-                startNewMainChat(null);
-              }
-            : undefined
-        }
       />
 
       {isMiniView ? (
         chatPanel
       ) : (
         <div className="flex flex-1 min-h-0">
-          <ChatSidebar
-            folders={folders}
-            conversations={conversations}
-            activeConversationId={activeConversationId}
-            loading={isSidebarLoading}
-            onSelectConversation={loadConversation}
-            onNewChat={(folderId) => startNewMainChat(folderId || null)}
-            onCreateFolder={handleCreateFolder}
-            onRenameFolder={handleRenameFolder}
-            onDeleteFolder={handleDeleteFolder}
-            onRenameConversation={handleRenameConversation}
-            onDeleteConversation={handleDeleteConversation}
-            onMoveConversation={handleMoveConversation}
-          />
+          <div
+            className="sidebar-hover-zone"
+            style={{
+              position: 'relative',
+              zIndex: 30,
+              flexShrink: 0,
+            }}
+          >
+            {/* Invisible hover trigger along the left edge */}
+            <div
+              className="sidebar-trigger"
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '180px',
+                height: '100%',
+                zIndex: 31,
+              }}
+            />
+            <div
+              className="sidebar-panel"
+              style={{
+                width: '288px',
+                height: '100%',
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                transform: 'translateX(-100%)',
+                transition: 'transform 0.25s ease, opacity 0.25s ease, box-shadow 0.25s ease',
+                opacity: 0,
+                boxShadow: 'none',
+                pointerEvents: 'none',
+              }}
+            >
+              <ChatSidebar
+                folders={folders}
+                conversations={conversations}
+                activeConversationId={activeConversationId}
+                loading={isSidebarLoading}
+                onSelectConversation={loadConversation}
+                onNewChat={(folderId) => startNewMainChat(folderId || null)}
+                onCreateFolder={handleCreateFolder}
+                onRenameFolder={handleRenameFolder}
+                onDeleteFolder={handleDeleteFolder}
+                onRenameConversation={handleRenameConversation}
+                onDeleteConversation={handleDeleteConversation}
+                onMoveConversation={handleMoveConversation}
+              />
+            </div>
+          </div>
 
           <Tabs
             value={activeTab}

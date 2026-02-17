@@ -1,13 +1,13 @@
 import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
+
 interface VestaHeaderProps {
   onClearChat?: () => void;
-  onNewChat?: () => void;
   compact?: boolean;
 }
 
-const VestaHeader = ({ onClearChat, onNewChat, compact = false }: VestaHeaderProps) => {
+const VestaHeader = ({ onClearChat, compact = false }: VestaHeaderProps) => {
   if (compact) {
     return (
       <header className="border-b border-vesta-header-border bg-card">
@@ -43,22 +43,9 @@ const VestaHeader = ({ onClearChat, onNewChat, compact = false }: VestaHeaderPro
             Internal AI Assistant
           </p>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-vesta-status" />
-            <span>Local • Session chat • Local files knowledge</span>
-          </div>
-          {onNewChat && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onNewChat}
-              className="text-xs text-muted-foreground hover:text-foreground"
-            >
-              <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
-              New chat
-            </Button>
-          )}
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-vesta-status" />
+          <span>Local • Session chat • Local files knowledge</span>
         </div>
       </div>
     </header>

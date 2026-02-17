@@ -34,3 +34,9 @@ __pycache__/
 vesta-backend/.env
 vesta-backend/.env.*
 !vesta-backend/.env.example
+
+# Backend build artifacts
+vesta-backend/build/
+vesta-backend/dist/
+vesta-backend/.pytest_cache/
+vesta-backend/logs/
