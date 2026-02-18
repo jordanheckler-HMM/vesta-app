@@ -90,7 +90,7 @@ interface IndexProps {
 
 const Index = ({ isMiniView = false }: IndexProps) => {
   const { theme, setTheme } = useAppTheme();
-  const { available: updateAvailable, version: updateVersion, downloading: updateDownloading, progress: updateProgress, startUpdate } = useAutoUpdate();
+  const { available: updateAvailable, version: updateVersion, downloading: updateDownloading, progress: updateProgress, error: updateError, startUpdate } = useAutoUpdate();
 
   const [mode, setMode] = useState<ThinkingMode>("general");
   const [model, setModel] = useState<ModelType>("auto");
@@ -390,6 +390,16 @@ const Index = ({ isMiniView = false }: IndexProps) => {
   useEffect(() => {
     void loadWeatherStatus(false);
   }, [loadWeatherStatus]);
+
+  useEffect(() => {
+    if (updateError) {
+      toast({
+        variant: "destructive",
+        title: "Update failed",
+        description: updateError,
+      });
+    }
+  }, [updateError]);
 
   useEffect(() => {
     if (isMiniView || isSetupStatusLoading || !setupStatus) {
