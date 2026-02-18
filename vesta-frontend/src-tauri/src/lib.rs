@@ -55,9 +55,10 @@ pub fn run() {
             }
 
             log::info!("Waiting for backend to be ready...");
-            if !wait_for_backend_ready(10) {
-                log::error!("Backend failed to start with required endpoints within timeout");
-                return Err("Backend failed readiness checks".into());
+            if !wait_for_backend_ready(30) {
+                log::warn!("Backend not fully ready after 30s, but proceeding to open UI...");
+            } else {
+                log::info!("Backend is ready!");
             }
 
             create_tray_icon(app)?;
@@ -425,34 +426,11 @@ fn check_backend_health() -> bool {
             .send()
         {
             Ok(response) => {
-                if !response.status().is_success() {
-                    log::warn!("Backend health check failed with status: {}", response.status());
-                    return false;
+                let success = response.status().is_success();
+                if !success {
+                    log::warn!("Backend health check returned status: {}", response.status());
                 }
-
-                match client
-                    .get(format!(
-                        "http://{BACKEND_HOST}:{BACKEND_PORT}/knowledge/files"
-                    ))
-                    .send()
-                {
-                    Ok(knowledge_response) => {
-                        if knowledge_response.status().is_success() {
-                            log::info!("Backend readiness check passed");
-                            true
-                        } else {
-                            log::warn!(
-                                "Knowledge endpoint check failed with status: {}",
-                                knowledge_response.status()
-                            );
-                            false
-                        }
-                    }
-                    Err(error) => {
-                        log::debug!("Knowledge endpoint check error: {}", error);
-                        false
-                    }
-                }
+                success
             }
             Err(error) => {
                 log::debug!("Backend health check error: {}", error);
