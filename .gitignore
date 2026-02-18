@@ -40,3 +40,6 @@ vesta-backend/build/
 vesta-backend/dist/
 vesta-backend/.pytest_cache/
 vesta-backend/logs/
+
+# Tauri signing keys
+.tauri-keys/

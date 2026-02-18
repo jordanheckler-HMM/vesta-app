@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Vesta",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "identifier": "com.vesta.app",
   "build": {
     "frontendDist": "../dist",
@@ -29,7 +29,7 @@
       "endpoints": [
         "https://github.com/jordanheckler-HMM/vesta-app/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE1NTJGNEM1NEExQUZCNEEKUldSSyt4cEt4ZlJTRlF3cFBUcTNpZnYrekJuQ3hZZ0dTcm12S2F5Tml3dXhBRysyNzZrWTFURHEK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYxRjlDREFFODQ4QUVFMkUKUldRdTdvcUVyczM1WWNFOVpiRGR4QXNnZ1Bnb0hLT3JCU2tqRTk0V0FwbTBmb3AraWpDV3drNGIK"
     }
   },
   "bundle": {
