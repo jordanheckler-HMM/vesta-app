@@ -2,6 +2,20 @@
 
 Internal desktop AI assistant with local chat, persistent local knowledge retrieval, and optional weather intelligence.
 
+## Screenshots
+
+### Main chat
+
+![Vesta main chat](docs/images/vesta-main-chat.png)
+
+### Files tab
+
+![Vesta files tab](docs/images/vesta-files-tab.png)
+
+### Mini chat
+
+![Vesta mini chat](docs/images/vesta-mini-chat.png)
+
 ## Stack
 
 - Frontend: React + TypeScript + Vite (`http://localhost:8081` in dev)
