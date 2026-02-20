@@ -76,7 +76,8 @@ The first-run setup flow in the app auto-downloads any missing model from this l
 ## Weather tab behavior
 
 - Weather tab appears only when backend `/weather/status` reports `enabled=true`.
-- Missing/invalid `OPENWEATHER_API_KEY` hides Weather tab.
+- Missing `OPENWEATHER_API_KEY` hides Weather tab.
+- If a key is present but invalid, weather calls fail and status can transition to disabled after failed API checks.
 - Weather settings are app-global:
   - tracking mode (`Storm Damage`, `Lawn Care`, `Construction`, `General`)
   - location (city/state/country resolved to lat/lon)

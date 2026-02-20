@@ -35,7 +35,7 @@ npm test
 
 ## Runtime behavior
 
-- Main window has `Chat` and `Files` tabs.
+- Main window has `Chat`, `Files`, and `Settings` tabs, plus `Weather` when enabled by backend status.
 - `Files` tab manages persistent local knowledge ingestion via backend APIs.
 - Mini window (`?view=mini`) is chat-only and is opened from the menu bar icon.
 - Chat stream supports metadata frames for retrieved source labels.

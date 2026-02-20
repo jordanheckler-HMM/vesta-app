@@ -60,7 +60,8 @@ Env file load order:
 2. `${VESTA_DATA_DIR}/.env` (or `~/.vesta/.env`)
 3. repo cwd `.env`
 
-If no key (or invalid key) is available, the Weather tab is hidden and all non-weather features continue working.
+If no key is available, the Weather tab is hidden and all non-weather features continue working.
+If a key is present but invalid, weather calls fail and `/weather/status` can transition to disabled after failed API checks.
 
 ## Install dependencies
 
