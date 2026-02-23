@@ -58,6 +58,8 @@ DEFAULT_MODEL_NAMES = {
     "lite": "hymetalab/vesta-lite",
 }
 MODEL_PROFILE_KEYS = ("lite", "general", "deep")
+ASSISTANT_PROFILE_OPTIONS = {"default", "medical", "legal"}
+DEFAULT_ASSISTANT_PROFILE = "default"
 EMBEDDING_MODEL = "qwen3-embedding:0.6b"
 REQUIRED_VESTA_MODELS = [
     DEFAULT_MODEL_NAMES["lite"],
@@ -103,6 +105,13 @@ def normalize_ollama_model_name(model_name: str) -> str:
     return normalized
 
 
+def normalize_assistant_profile(profile: Optional[str]) -> str:
+    normalized = (profile or DEFAULT_ASSISTANT_PROFILE).strip().lower()
+    if normalized in ASSISTANT_PROFILE_OPTIONS:
+        return normalized
+    return DEFAULT_ASSISTANT_PROFILE
+
+
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
@@ -110,6 +119,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     mode: Literal["draft", "think", "clarify", "general"]
+    profile: Literal["default", "medical", "legal"] = "default"
     message: str = Field(..., min_length=1)
     messages: List[ChatMessage] = Field(default_factory=list)
     model: Optional[Literal["general", "deep", "lite", "auto"]] = "auto"
@@ -152,6 +162,10 @@ class ModelSettingsUpdateRequest(BaseModel):
     lite: str = Field(..., min_length=1)
     general: str = Field(..., min_length=1)
     deep: str = Field(..., min_length=1)
+
+
+class ProfileSettingsUpdateRequest(BaseModel):
+    profile: Literal["default", "medical", "legal"]
 
 
 class SetupPrerequisitesRequest(BaseModel):
@@ -455,6 +469,13 @@ class KnowledgeStore:
                     )
                 conn.execute(
                     """
+                    INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+                    VALUES ('assistant_profile', ?, ?)
+                    """,
+                    (DEFAULT_ASSISTANT_PROFILE, now),
+                )
+                conn.execute(
+                    """
                     INSERT OR IGNORE INTO weather_settings (
                         id, mode, country, cache_ttl_minutes, updated_at
                     )
@@ -514,6 +535,40 @@ class KnowledgeStore:
                 conn.commit()
 
         return next_config
+
+    def get_assistant_profile(self) -> str:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT value
+                    FROM app_settings
+                    WHERE key = 'assistant_profile'
+                    """
+                ).fetchone()
+                if row is None:
+                    return DEFAULT_ASSISTANT_PROFILE
+
+                return normalize_assistant_profile(str(row["value"]))
+
+    def set_assistant_profile(self, profile: str) -> str:
+        normalized = normalize_assistant_profile(profile)
+        now = self._current_ts()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES ('assistant_profile', ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    (normalized, now),
+                )
+                conn.commit()
+
+        return normalized
 
     def create_setup_run(self, requested_models: Optional[List[str]]) -> str:
         run_id = str(uuid4())
@@ -2052,6 +2107,7 @@ class KnowledgeStore:
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 BASE_PROMPT = ""
 MODE_PROMPTS: Dict[str, str] = {}
+PROFILE_PROMPTS: Dict[str, str] = {}
 KNOWLEDGE_STORE: Optional[KnowledgeStore] = None
 ENV_LOADED = False
 
@@ -3778,11 +3834,20 @@ async def retrieve_knowledge_context(
 @app.on_event("startup")
 async def startup() -> None:
     """Load prompts and initialize local stores."""
-    global BASE_PROMPT, MODE_PROMPTS
+    global BASE_PROMPT, MODE_PROMPTS, PROFILE_PROMPTS
 
     load_vesta_env()
 
-    required_prompts = ["base.txt", "draft.txt", "think.txt", "clarify.txt", "general.txt"]
+    required_prompts = [
+        "base.txt",
+        "draft.txt",
+        "think.txt",
+        "clarify.txt",
+        "general.txt",
+        "profile_default.txt",
+        "profile_medical.txt",
+        "profile_legal.txt",
+    ]
     missing_prompts = []
 
     for prompt_file in required_prompts:
@@ -3808,9 +3873,16 @@ async def startup() -> None:
             "clarify": (PROMPTS_DIR / "clarify.txt").read_text().strip(),
             "general": (PROMPTS_DIR / "general.txt").read_text().strip(),
         }
+        PROFILE_PROMPTS = {
+            "default": (PROMPTS_DIR / "profile_default.txt").read_text().strip(),
+            "medical": (PROMPTS_DIR / "profile_medical.txt").read_text().strip(),
+            "legal": (PROMPTS_DIR / "profile_legal.txt").read_text().strip(),
+        }
 
         get_knowledge_store()
-        print(f"Successfully loaded {len(MODE_PROMPTS) + 1} prompt files from {PROMPTS_DIR}")
+        print(
+            f"Successfully loaded {len(MODE_PROMPTS) + len(PROFILE_PROMPTS) + 1} prompt files from {PROMPTS_DIR}"
+        )
     except Exception as e:
         print(f"Error during startup initialization: {e}", file=sys.stderr)
         raise
@@ -3968,12 +4040,13 @@ def get_fallback_model(mode: str) -> str:
 
 def build_conversation_context(
     messages: List[ChatMessage],
+    profile_prompt: str,
     mode_prompt: str,
     current_message: str,
     knowledge_context: str = "",
 ) -> str:
     """Build the full conversation context including history and optional retrieved knowledge."""
-    context_parts = [BASE_PROMPT, "", mode_prompt, ""]
+    context_parts = [BASE_PROMPT, "", profile_prompt, "", mode_prompt, ""]
 
     if knowledge_context:
         context_parts.extend([knowledge_context, ""])
@@ -4043,6 +4116,7 @@ async def chat(request: ChatRequest):
         start_time = time.time()
         routing_decision = None
         consistency_enforced = False
+        selected_profile = normalize_assistant_profile(request.profile)
 
         if request.model == "auto":
             routing_decision = await route_to_model(
@@ -4068,6 +4142,9 @@ async def chat(request: ChatRequest):
                     "Prevented mid-task downgrade",
                     len([m for m in request.messages if m.role == "user"]),
                 )
+
+            if selected_profile in {"medical", "legal"} and selected_model_key == "lite":
+                selected_model_key = "general"
         else:
             selected_model_key = request.model if request.model != "auto" else "general"
 
@@ -4140,9 +4217,11 @@ async def chat(request: ChatRequest):
         combined_context = "\n\n".join(context_blocks)
         combined_sources = [*knowledge_sources, *weather_sources]
 
+        profile_prompt = PROFILE_PROMPTS.get(selected_profile, PROFILE_PROMPTS.get("default", ""))
         mode_prompt = MODE_PROMPTS.get(request.mode, "")
         full_prompt = build_conversation_context(
             request.messages,
+            profile_prompt,
             mode_prompt,
             request.message,
             combined_context,
@@ -5219,6 +5298,19 @@ async def get_model_settings():
         "available_models": available_models,
         "ollama_connected": ollama_connected,
     }
+
+
+@app.get("/settings/profile")
+async def get_profile_settings():
+    store = get_knowledge_store()
+    return {"profile": store.get_assistant_profile()}
+
+
+@app.put("/settings/profile")
+async def update_profile_settings(request: ProfileSettingsUpdateRequest):
+    store = get_knowledge_store()
+    profile = store.set_assistant_profile(request.profile)
+    return {"profile": profile}
 
 
 @app.put("/settings/models")

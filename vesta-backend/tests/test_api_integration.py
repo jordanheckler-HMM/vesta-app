@@ -1001,6 +1001,152 @@ def test_model_settings_validation_accepts_untagged_names_when_latest_exists(mon
     assert body["configured_models"]["lite"] == "hymetalab/vesta-lite"
 
 
+def test_profile_settings_default_and_persistence():
+    with TestClient(main.app) as client:
+        initial = client.get("/settings/profile")
+        assert initial.status_code == 200
+        assert initial.json()["profile"] == "default"
+
+        updated = client.put("/settings/profile", json={"profile": "medical"})
+        assert updated.status_code == 200
+        assert updated.json()["profile"] == "medical"
+
+        current = client.get("/settings/profile")
+        assert current.status_code == 200
+        assert current.json()["profile"] == "medical"
+
+
+def test_chat_auto_profile_guardrail_medical_and_legal(monkeypatch):
+    captured = {"models": []}
+
+    async def _fake_stream(model_name, prompt, sources=None):
+        captured["models"].append(model_name)
+        yield f"data: {main.json.dumps({'metadata': {'sources': sources or []}})}\n\n"
+        yield f"data: {main.json.dumps({'content': 'ok', 'done': True})}\n\n"
+
+    class _Signals:
+        energy = 0.1
+        information = 0.1
+        connection = 0.1
+        noise_tolerance = 0.4
+
+    class _TaskContext:
+        is_continuation = False
+        is_new_task = True
+        depth = 0
+        requires_consistency = False
+        complexity_trend = "stable"
+        task_type = "general"
+
+    class _Decision:
+        model = "lite"
+        method = "heuristic"
+        reasoning = "test decision"
+        signals = _Signals()
+        task_context = _TaskContext()
+        confidence = 0.9
+        fallback_used = False
+
+    async def _fake_route_to_model(message, mode, history, last_model_used=None):
+        return _Decision()
+
+    monkeypatch.setattr(main, "stream_ollama_response", _fake_stream)
+    monkeypatch.setattr(main, "route_to_model", _fake_route_to_model)
+    monkeypatch.setattr(
+        main,
+        "enforce_model_consistency",
+        lambda selected_model, history, last_model_used: (selected_model, False),
+    )
+
+    with TestClient(main.app) as client:
+        medical = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "profile": "medical",
+                "message": "medical test",
+                "messages": [],
+                "model": "auto",
+            },
+        )
+        legal = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "profile": "legal",
+                "message": "legal test",
+                "messages": [],
+                "model": "auto",
+            },
+        )
+        default = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "profile": "default",
+                "message": "default test",
+                "messages": [],
+                "model": "auto",
+            },
+        )
+        manual = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "profile": "medical",
+                "message": "manual model test",
+                "messages": [],
+                "model": "lite",
+            },
+        )
+
+    assert medical.status_code == 200
+    assert legal.status_code == 200
+    assert default.status_code == 200
+    assert manual.status_code == 200
+    assert captured["models"][0] == main.DEFAULT_MODEL_NAMES["general"]
+    assert captured["models"][1] == main.DEFAULT_MODEL_NAMES["general"]
+    assert captured["models"][2] == main.DEFAULT_MODEL_NAMES["lite"]
+    assert captured["models"][3] == main.DEFAULT_MODEL_NAMES["lite"]
+
+
+def test_chat_profile_prompt_layering_and_backward_compatibility(monkeypatch):
+    captured = {}
+
+    async def _fake_stream(model_name, prompt, sources=None):
+        captured["prompt"] = prompt
+        yield f"data: {main.json.dumps({'metadata': {'sources': sources or []}})}\n\n"
+        yield f"data: {main.json.dumps({'content': 'ok', 'done': True})}\n\n"
+
+    monkeypatch.setattr(main, "stream_ollama_response", _fake_stream)
+
+    with TestClient(main.app) as client:
+        medical = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "profile": "medical",
+                "message": "What should I review?",
+                "messages": [],
+                "model": "general",
+            },
+        )
+        assert medical.status_code == 200
+        assert "Profile: Medical" in captured["prompt"]
+
+        legacy = client.post(
+            "/chat",
+            json={
+                "mode": "general",
+                "message": "Legacy request",
+                "messages": [],
+                "model": "general",
+            },
+        )
+
+    assert legacy.status_code == 200
+
+
 def _sample_forecast_points() -> list[dict]:
     now = int(main.time.time())
     points = []

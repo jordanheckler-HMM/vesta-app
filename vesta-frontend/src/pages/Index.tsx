@@ -12,6 +12,7 @@ import ChatSidebar, {
 import FilesTab from "@/components/FilesTab";
 import ModeSelector, { ThinkingMode } from "@/components/ModeSelector";
 import ModelSelector, { ModelType } from "@/components/ModelSelector";
+import ProfileSelector, { AssistantProfile } from "@/components/ProfileSelector";
 import SetupWizard from "@/components/SetupWizard";
 import ThemeSettingsTab, {
   type ModelSettingsValues,
@@ -69,6 +70,10 @@ interface ModelSettingsResponse {
   ollama_connected: boolean;
 }
 
+interface ProfileSettingsResponse {
+  profile: AssistantProfile;
+}
+
 interface SetupPrerequisitesRunResponse {
   approved: boolean;
   installed_ollama: boolean;
@@ -88,10 +93,22 @@ interface IndexProps {
   isMiniView?: boolean;
 }
 
+const normalizeAssistantProfile = (value: unknown): AssistantProfile => {
+  if (value === "medical" || value === "legal" || value === "default") {
+    return value;
+  }
+  return "default";
+};
+
 const Index = ({ isMiniView = false }: IndexProps) => {
   const { theme, setTheme } = useAppTheme();
   const { available: updateAvailable, version: updateVersion, downloading: updateDownloading, progress: updateProgress, error: updateError, startUpdate } = useAutoUpdate();
 
+  const [profile, setProfile] = useState<AssistantProfile>("default");
+  const [savedAssistantProfile, setSavedAssistantProfile] =
+    useState<AssistantProfile>("default");
+  const [draftAssistantProfile, setDraftAssistantProfile] =
+    useState<AssistantProfile>("default");
   const [mode, setMode] = useState<ThinkingMode>("general");
   const [model, setModel] = useState<ModelType>("auto");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -121,6 +138,7 @@ const Index = ({ isMiniView = false }: IndexProps) => {
     useState<ModelSettingsValues | null>(null);
   const [availableOllamaModels, setAvailableOllamaModels] = useState<string[]>([]);
   const [isOllamaConnected, setIsOllamaConnected] = useState(true);
+  const [isProfileSettingsSaving, setIsProfileSettingsSaving] = useState(false);
   const [isModelSettingsLoading, setIsModelSettingsLoading] = useState(false);
   const [isModelSettingsSaving, setIsModelSettingsSaving] = useState(false);
   const [setupStatus, setSetupStatus] = useState<SetupPrerequisitesStatus | null>(
@@ -323,6 +341,33 @@ const Index = ({ isMiniView = false }: IndexProps) => {
     [isMiniView],
   );
 
+  const loadAssistantProfileSettings = useCallback(
+    async (showErrorToast = false) => {
+      try {
+        const response = await fetch(`${BACKEND_BASE_URL}/settings/profile`);
+        if (!response.ok) {
+          throw new Error("Failed to load profile settings");
+        }
+
+        const body = (await response.json()) as ProfileSettingsResponse;
+        const nextProfile = normalizeAssistantProfile(body.profile);
+        setSavedAssistantProfile(nextProfile);
+        setDraftAssistantProfile(nextProfile);
+        setProfile(nextProfile);
+      } catch (error) {
+        console.error("Failed to load profile settings", error);
+        if (showErrorToast) {
+          toast({
+            variant: "destructive",
+            title: "Could not load profile settings",
+            description: "Please verify the backend is running and try again.",
+          });
+        }
+      }
+    },
+    [],
+  );
+
   const loadSetupStatus = useCallback(
     async (showErrorToast = false) => {
       setIsSetupStatusLoading(true);
@@ -392,6 +437,10 @@ const Index = ({ isMiniView = false }: IndexProps) => {
   }, [loadWeatherStatus]);
 
   useEffect(() => {
+    void loadAssistantProfileSettings(false);
+  }, [loadAssistantProfileSettings]);
+
+  useEffect(() => {
     if (updateError) {
       toast({
         variant: "destructive",
@@ -427,6 +476,7 @@ const Index = ({ isMiniView = false }: IndexProps) => {
     setMessages([]);
     setIsLoading(false);
     setIsStreaming(false);
+    setProfile(savedAssistantProfile);
     setMode("general");
     setModel("auto");
     setLastModelUsed(null);
@@ -596,6 +646,7 @@ const Index = ({ isMiniView = false }: IndexProps) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          profile,
           mode,
           message: messageContent,
           messages: messages.map((message) => ({
@@ -781,6 +832,48 @@ const Index = ({ isMiniView = false }: IndexProps) => {
       setIsLoading(false);
       setIsStreaming(false);
       abortControllerRef.current = null;
+    }
+  };
+
+  const handleAssistantProfileChange = (nextProfile: AssistantProfile) => {
+    setDraftAssistantProfile(nextProfile);
+  };
+
+  const handleSaveAssistantProfile = async () => {
+    setIsProfileSettingsSaving(true);
+    try {
+      const response = await fetch(`${BACKEND_BASE_URL}/settings/profile`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ profile: draftAssistantProfile }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(errorBody.detail || "Failed to save profile settings");
+      }
+
+      const body = (await response.json()) as ProfileSettingsResponse;
+      const nextProfile = normalizeAssistantProfile(body.profile);
+      setSavedAssistantProfile(nextProfile);
+      setDraftAssistantProfile(nextProfile);
+      setProfile(nextProfile);
+      toast({
+        title: "Profile default saved",
+        description: "New chats will start with this assistant profile.",
+      });
+    } catch (error) {
+      console.error("Failed to save profile settings", error);
+      toast({
+        variant: "destructive",
+        title: "Could not save profile default",
+        description:
+          error instanceof Error ? error.message : "Please try again.",
+      });
+    } finally {
+      setIsProfileSettingsSaving(false);
     }
   };
 
@@ -1452,6 +1545,11 @@ const Index = ({ isMiniView = false }: IndexProps) => {
 
       {isMiniView && (
         <>
+          <ProfileSelector
+            selectedProfile={profile}
+            onProfileChange={setProfile}
+            compact
+          />
           <ModeSelector selectedMode={mode} onModeChange={setMode} compact />
           <ModelSelector selectedModel={model} onModelChange={setModel} compact />
         </>
@@ -1479,6 +1577,7 @@ const Index = ({ isMiniView = false }: IndexProps) => {
           topContent={
             !isMiniView ? (
               <div className="flex flex-wrap items-center justify-between gap-3">
+                <ProfileSelector selectedProfile={profile} onProfileChange={setProfile} inline />
                 <ModeSelector selectedMode={mode} onModeChange={setMode} inline />
                 <ModelSelector
                   selectedModel={model}
@@ -1606,16 +1705,20 @@ const Index = ({ isMiniView = false }: IndexProps) => {
               <ThemeSettingsTab
                 theme={theme}
                 onThemeChange={setTheme}
+                assistantProfile={draftAssistantProfile}
                 modelSettings={draftModelSettings}
                 availableModels={availableOllamaModels}
                 setupStatus={setupStatus}
                 ollamaConnected={isOllamaConnected}
+                savingProfile={isProfileSettingsSaving}
                 loadingModels={isModelSettingsLoading}
                 loadingSetupStatus={isSetupStatusLoading}
                 savingModels={isModelSettingsSaving}
                 runningSetup={isSetupRunning}
                 setupProgressSummary={setupProgressSummary}
                 setupModelProgress={setupModelProgress}
+                onAssistantProfileChange={handleAssistantProfileChange}
+                onSaveAssistantProfile={handleSaveAssistantProfile}
                 onModelSettingChange={handleModelSettingChange}
                 onSaveModelSettings={handleSaveModelSettings}
                 onRefreshModels={() => loadModelSettings(true)}

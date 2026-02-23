@@ -46,6 +46,27 @@ describe("ThemeSettingsTab", () => {
     expect(onSaveModelSettings).toHaveBeenCalled();
   });
 
+  it("updates and saves assistant profile default", () => {
+    const onAssistantProfileChange = vi.fn();
+    const onSaveAssistantProfile = vi.fn();
+
+    render(
+      <ThemeSettingsTab
+        theme="light"
+        onThemeChange={vi.fn()}
+        assistantProfile="default"
+        onAssistantProfileChange={onAssistantProfileChange}
+        onSaveAssistantProfile={onSaveAssistantProfile}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("radio", { name: /medical/i }));
+    expect(onAssistantProfileChange).toHaveBeenCalledWith("medical");
+
+    fireEvent.click(screen.getByRole("button", { name: /save profile default/i }));
+    expect(onSaveAssistantProfile).toHaveBeenCalled();
+  });
+
   it("triggers approved setup action from settings", () => {
     const onRunPrerequisiteSetup = vi.fn();
 

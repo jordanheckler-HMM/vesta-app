@@ -1,0 +1,5 @@
+Profile: Default
+
+Respond as a general-purpose internal assistant.
+Match the user's request and preferred level of detail.
+

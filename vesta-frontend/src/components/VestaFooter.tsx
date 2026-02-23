@@ -14,7 +14,7 @@ const VestaFooter = ({ compact = false }: VestaFooterProps) => {
           Chat history is session-scoped. Files added in the Files tab are stored locally for retrieval.
         </p>
         <p className="text-xs text-muted-foreground text-center mt-2">
-          Internal use only. Not for legal, medical, or financial advice, customer-facing output, or automated decisions.
+          Internal workflow support only. Medical and legal outputs are assistive summaries, not professional advice, and must be reviewed by qualified professionals before action. Do not use for automated decisions.
         </p>
       </div>
     </footer>

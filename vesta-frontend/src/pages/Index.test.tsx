@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import Index from "./Index";
@@ -59,6 +59,12 @@ beforeEach(() => {
       );
     }
 
+    if (url.endsWith("/settings/profile")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ profile: "default" }), { status: 200 }),
+      );
+    }
+
     return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -75,6 +81,7 @@ describe("Index", () => {
   it("uses condensed prompt and routing controls on the main chat view", async () => {
     render(<Index />);
 
+    expect(screen.getByText(/profile/i)).toBeInTheDocument();
     expect(screen.getByText(/prompt/i)).toBeInTheDocument();
     expect(screen.getByText(/routing/i)).toBeInTheDocument();
     expect(screen.queryByText(/what kind of thinking do you want to do/i)).not.toBeInTheDocument();
@@ -84,6 +91,89 @@ describe("Index", () => {
       expect(fetch).toHaveBeenCalledWith("http://localhost:8090/conversations");
       expect(fetch).toHaveBeenCalledWith("http://localhost:8090/setup/prerequisites");
     });
+  });
+
+  it("includes assistant profile in chat requests", async () => {
+    const encoder = new TextEncoder();
+    let capturedBody: Record<string, unknown> | null = null;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/setup/prerequisites")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ollama_installed: true,
+              ollama_running: true,
+              required_models: [],
+              available_models: [],
+              missing_models: [],
+              ready: true,
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      if (url.endsWith("/weather/status")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              enabled: false,
+              reason: "missing_api_key",
+              has_cached_data: false,
+              last_refresh_ts: null,
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      if (url.endsWith("/settings/profile")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ profile: "default" }), { status: 200 }),
+        );
+      }
+      if (url.endsWith("/chat")) {
+        capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+          string,
+          unknown
+        >;
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"content":"ok"}\n\n'));
+            controller.enqueue(encoder.encode('data: {"done": true}\n\n'));
+            controller.close();
+          },
+        });
+        return Promise.resolve(
+          new Response(stream, {
+            status: 200,
+            headers: {
+              "Content-Type": "text/event-stream",
+              "X-Selected-Model": "general",
+            },
+          }),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Index isMiniView />);
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("http://localhost:8090/settings/profile");
+    });
+
+    fireEvent.change(screen.getByLabelText(/message input/i), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send message/i }));
+
+    await waitFor(() => {
+      expect(capturedBody).not.toBeNull();
+    });
+
+    expect(capturedBody?.profile).toBe("default");
   });
 
   it("hides Files tab in mini view", () => {

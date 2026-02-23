@@ -55,6 +55,11 @@ beforeEach(() => {
         ),
       );
     }
+    if (url.endsWith("/settings/profile")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ profile: "default" }), { status: 200 }),
+      );
+    }
     if (url.endsWith("/settings/models")) {
       return Promise.resolve(
         new Response(

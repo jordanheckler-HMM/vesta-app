@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Brush, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import type { AssistantProfile } from "@/components/ProfileSelector";
 import type { AppTheme } from "@/hooks/use-app-theme";
 
 type ModelProfileKey = "lite" | "general" | "deep";
@@ -24,16 +25,20 @@ export interface SetupPrerequisitesStatus {
 interface ThemeSettingsTabProps {
   theme: AppTheme;
   onThemeChange: (theme: AppTheme) => void;
+  assistantProfile?: AssistantProfile;
   modelSettings?: ModelSettingsValues | null;
   availableModels?: string[];
   setupStatus?: SetupPrerequisitesStatus | null;
   ollamaConnected?: boolean;
+  savingProfile?: boolean;
   loadingModels?: boolean;
   loadingSetupStatus?: boolean;
   savingModels?: boolean;
   runningSetup?: boolean;
   setupProgressSummary?: string;
   setupModelProgress?: Record<string, string>;
+  onAssistantProfileChange?: (profile: AssistantProfile) => void;
+  onSaveAssistantProfile?: () => void | Promise<void>;
   onModelSettingChange?: (profile: ModelProfileKey, modelName: string) => void;
   onSaveModelSettings?: () => void | Promise<void>;
   onRefreshModels?: () => void | Promise<void>;
@@ -59,19 +64,45 @@ const options: { id: AppTheme; title: string; description: string }[] = [
   },
 ];
 
+const assistantProfileOptions: {
+  id: AssistantProfile;
+  label: string;
+  description: string;
+}[] = [
+  {
+    id: "default",
+    label: "Default",
+    description: "General internal assistant behavior.",
+  },
+  {
+    id: "medical",
+    label: "Medical",
+    description: "Medical workflow support with stricter caution language.",
+  },
+  {
+    id: "legal",
+    label: "Legal",
+    description: "Legal workflow support with stricter caution language.",
+  },
+];
+
 const ThemeSettingsTab = ({
   theme,
   onThemeChange,
+  assistantProfile = "default",
   modelSettings = null,
   availableModels = [],
   setupStatus = null,
   ollamaConnected = true,
+  savingProfile = false,
   loadingModels = false,
   loadingSetupStatus = false,
   savingModels = false,
   runningSetup = false,
   setupProgressSummary = "",
   setupModelProgress = {},
+  onAssistantProfileChange,
+  onSaveAssistantProfile,
   onModelSettingChange,
   onSaveModelSettings,
   onRefreshModels,
@@ -251,6 +282,54 @@ const ThemeSettingsTab = ({
                 </div>
               </div>
             ) : null}
+          </section>
+
+          <section className="rounded-lg border border-vesta-header-border bg-card p-4 space-y-3">
+            <h3 className="text-base font-semibold text-foreground">Assistant Profile (Default)</h3>
+            <p className="text-sm text-muted-foreground mt-1">
+              Choose the default assistant profile used when new chats start.
+            </p>
+
+            <div className="space-y-2.5">
+              {assistantProfileOptions.map((option) => (
+                <label
+                  key={option.id}
+                  className={`flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 ${
+                    assistantProfile === option.id
+                      ? "border-primary bg-primary/10"
+                      : "border-border bg-background"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="assistant-profile-default"
+                    value={option.id}
+                    checked={assistantProfile === option.id}
+                    onChange={() => onAssistantProfileChange?.(option.id)}
+                    className="mt-0.5"
+                    disabled={!onAssistantProfileChange || savingProfile}
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-foreground">
+                      {option.label}
+                    </span>
+                    <span className="block text-xs text-muted-foreground">
+                      {option.description}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            <Button
+              type="button"
+              onClick={() => {
+                void onSaveAssistantProfile?.();
+              }}
+              disabled={savingProfile || !onSaveAssistantProfile}
+            >
+              {savingProfile ? "Saving..." : "Save profile default"}
+            </Button>
           </section>
 
           <section className="rounded-lg border border-vesta-header-border bg-card p-4 space-y-3">
